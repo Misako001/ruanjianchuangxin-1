@@ -1,135 +1,345 @@
-import type {
+import {
+  CommentItem,
   CommunityComment,
+  CommunityFeedSort,
   CommunityPostDetail,
   CommunityPostSummary,
-  CommunityProfile,
-  CommunityUserSummary,
+  CommunityUser,
+  LocalCreateCommentInput,
+  LocalCreatePostInput,
 } from './contracts';
 
-export const demoCurrentUser: CommunityUserSummary = {
-  id: 'user-vision-01',
-  externalAccountId: 'visiongenie-main-user-01',
-  displayName: '晨星工坊',
-  handle: 'starlab',
-  avatarUrl: null,
+export const demoCurrentUser: CommunityUser = {
+  id: 'user-demo',
+  name: 'Vision Genie 创作者',
+  avatarText: 'VG',
+  bio: '热爱 AI 创作、配色和社区交流。',
 };
 
-export const demoProfiles: CommunityProfile[] = [
-  {
-    ...demoCurrentUser,
-    bio: '记录创作过程，也常来社区里聊模型、渲染和工作流。',
-    stats: { postCount: 18, commentCount: 64, favoriteCount: 29 },
+const demoUsers: Record<string, CommunityUser> = {
+  [demoCurrentUser.id]: demoCurrentUser,
+  'user-luna': {
+    id: 'user-luna',
+    name: 'Luna',
+    avatarText: 'LU',
+    bio: '偏爱胶片色调和夜景拍摄。',
   },
-  {
-    id: 'user-vision-02',
-    externalAccountId: 'visiongenie-main-user-02',
-    displayName: '山海像素',
-    handle: 'seapixel',
-    avatarUrl: null,
-    bio: '偏爱做风格实验，喜欢把参考图和失败过程一起发出来。',
-    stats: { postCount: 33, commentCount: 105, favoriteCount: 51 },
+  'user-mars': {
+    id: 'user-mars',
+    name: 'Mars',
+    avatarText: 'MA',
+    bio: '正在尝试把建模流程做得更轻量。',
   },
-  {
-    id: 'user-vision-03',
-    externalAccountId: 'visiongenie-main-user-03',
-    displayName: '零号建模站',
-    handle: 'meshzero',
-    avatarUrl: null,
-    bio: '主做 3D 结构与材质探索，也会分享调参踩坑记录。',
-    stats: { postCount: 12, commentCount: 40, favoriteCount: 16 },
+  'user-nova': {
+    id: 'user-nova',
+    name: 'Nova',
+    avatarText: 'NO',
+    bio: '喜欢收集创意灵感和画面结构。',
   },
-];
+};
 
-export const demoMyProfile = demoProfiles[0];
-
-const detailFeed: CommunityPostDetail[] = [
-  {
+export const demoCommunityPostDetails: Record<string, CommunityPostDetail> = {
+  'post-01': {
     id: 'post-01',
-    title: '把参考草图变成完整作品时，我最常卡在结构统一这一步',
-    excerpt:
-      '最近连续做了几组角色稿，发现第一眼吸引人的细节很多，但真正决定完成度的是结构能不能收束起来。',
+    author: demoUsers['user-luna'],
+    publishedAt: '2026-03-18T10:30:00.000Z',
+    title: '把夜景照片调成电影蓝调的三个步骤',
+    summary: '我用 Vision Genie 做了一次夜景改色，发现先压暗高光再提亮中间调很稳。',
     content:
-      '最近连续做了几组角色稿，发现第一眼吸引人的细节很多，但真正决定完成度的是结构能不能收束起来。现在我的做法是先把大块体拆干净，再回头补材质和小装饰，这样在社区里分享时也更容易让别人复现流程。首期社区我特别希望能承载这种“过程型内容”，不只是晒最终图。',
-    publishedAt: '2026-03-18T09:30:00.000Z',
-    author: demoProfiles[1],
-    imagePreviewUrls: [
-      'https://images.visiongenie.local/post-01-1.jpg',
-      'https://images.visiongenie.local/post-01-2.jpg',
+      '我用 Vision Genie 做了一次夜景改色，发现先压暗高光再提亮中间调很稳。第一步先把画面的高光区域压下来，避免霓虹灯直接炸掉；第二步用偏青蓝的中间调覆盖街景，让主体和背景的关系更统一；第三步再轻微提一点肤色或主体的暖色，画面会更有层次。',
+    images: [
+      {
+        id: 'post-01-image-01',
+        url: 'https://images.example.com/community/post-01.jpg',
+        alt: '夜景蓝调示例图',
+      },
     ],
-    stats: { likeCount: 182, commentCount: 27, favoriteCount: 49 },
-    viewerContext: { liked: true, favorited: false, canDelete: false },
+    stats: {
+      likeCount: 18,
+      commentCount: 2,
+      favoriteCount: 6,
+    },
+    viewerContext: {
+      liked: false,
+      favorited: false,
+    },
   },
-  {
+  'post-02': {
     id: 'post-02',
-    title: '你们会把失败尝试也发出来吗？我最近反而靠这些内容拿到更多讨论',
-    excerpt:
-      '以前总想等作品完全满意再发，但现在发现把失败路径写出来，反而更容易引来高质量交流。',
+    author: demoUsers['user-mars'],
+    publishedAt: '2026-03-19T04:20:00.000Z',
+    title: '3D 建模功能适合拿来做产品草模吗？',
+    summary: '今天试着用手机快速扫了个摆件，想讨论一下这套流程更适合概念验证还是成品输出。',
     content:
-      '以前总想等作品完全满意再发，但现在发现把失败路径写出来，反而更容易引来高质量交流。社区如果能把帖子、评论、收藏串起来，用户会更愿意沉淀经验，而不是只追求一次性曝光。',
-    publishedAt: '2026-03-17T13:15:00.000Z',
-    author: demoProfiles[2],
-    imagePreviewUrls: ['https://images.visiongenie.local/post-02-1.jpg'],
-    stats: { likeCount: 96, commentCount: 34, favoriteCount: 17 },
-    viewerContext: { liked: false, favorited: true, canDelete: false },
+      '今天试着用手机快速扫了个摆件，想讨论一下这套流程更适合概念验证还是成品输出。目前我的感受是，作为灵感验证非常快，尤其适合和调色、画面包装一起走。但如果要直接给工业级精度，还是需要后面再做一次精修。',
+    images: [],
+    stats: {
+      likeCount: 11,
+      commentCount: 1,
+      favoriteCount: 3,
+    },
+    viewerContext: {
+      liked: true,
+      favorited: false,
+    },
   },
-  {
+  'post-03': {
     id: 'post-03',
-    title: '社区首页首批信息架构建议：推荐、最新、热门足够启动 MVP',
-    excerpt:
-      '如果一期目标是把内容生产和互动闭环先跑起来，首页的信息架构不宜太复杂。',
+    author: demoUsers['user-nova'],
+    publishedAt: '2026-03-19T13:45:00.000Z',
+    title: '把灵感板变成一个可执行的拍摄清单',
+    summary: '我最近会先在社区里记录构图和关键词，再反推拍摄顺序，效率提升不少。',
     content:
-      '如果一期目标是把内容生产和互动闭环先跑起来，首页的信息架构不宜太复杂。推荐可以先复用热门结果，后续再引入个性化；最新承担内容发现；热门负责讨论气氛。这样 App 和 Web 都更容易共用同一套接口。',
-    publishedAt: '2026-03-19T05:45:00.000Z',
-    author: demoCurrentUser,
-    imagePreviewUrls: [],
-    stats: { likeCount: 64, commentCount: 11, favoriteCount: 23 },
-    viewerContext: { liked: false, favorited: false, canDelete: true },
+      '我最近会先在社区里记录构图和关键词，再反推拍摄顺序，效率提升不少。先把想要的情绪、颜色和主体动作写下来，再标记哪些需要 AI 调色、哪些要靠实拍完成，最后组合成真正可执行的拍摄清单。',
+    images: [
+      {
+        id: 'post-03-image-01',
+        url: 'https://images.example.com/community/post-03-01.jpg',
+        alt: '灵感板示意图',
+      },
+      {
+        id: 'post-03-image-02',
+        url: 'https://images.example.com/community/post-03-02.jpg',
+        alt: '拍摄清单示意图',
+      },
+    ],
+    stats: {
+      likeCount: 26,
+      commentCount: 3,
+      favoriteCount: 12,
+    },
+    viewerContext: {
+      liked: false,
+      favorited: true,
+    },
   },
-];
+};
 
-export const demoFeed: CommunityPostSummary[] = detailFeed.map(
-  ({ content: _content, viewerContext: _viewerContext, ...post }) => post,
-);
+export const demoCommunityCommentsByPostId: Record<string, CommunityComment[]> = {
+  'post-01': [
+    {
+      id: 'comment-01',
+      postId: 'post-01',
+      author: demoUsers['user-mars'],
+      content: '这个分步思路很清晰，我回头也试试先压高光。',
+      publishedAt: '2026-03-18T11:00:00.000Z',
+    },
+    {
+      id: 'comment-02',
+      postId: 'post-01',
+      author: demoUsers['user-nova'],
+      content: '最后补一点暖色真的很关键，不然人物会显得有点冷。',
+      publishedAt: '2026-03-18T12:10:00.000Z',
+    },
+  ],
+  'post-02': [
+    {
+      id: 'comment-03',
+      postId: 'post-02',
+      author: demoUsers['user-luna'],
+      content: '我更偏向概念验证，不过前期出稿真的非常快。',
+      publishedAt: '2026-03-19T05:05:00.000Z',
+    },
+  ],
+  'post-03': [
+    {
+      id: 'comment-04',
+      postId: 'post-03',
+      author: demoUsers['user-luna'],
+      content: '这个方法很适合团队协作时统一目标。',
+      publishedAt: '2026-03-19T14:20:00.000Z',
+    },
+    {
+      id: 'comment-05',
+      postId: 'post-03',
+      author: demoUsers['user-mars'],
+      content: '想看你后面是怎么把清单映射到拍摄流程里的。',
+      publishedAt: '2026-03-19T15:00:00.000Z',
+    },
+    {
+      id: 'comment-06',
+      postId: 'post-03',
+      author: demoCurrentUser,
+      content: '这个思路和灵感采集功能也能接起来。',
+      publishedAt: '2026-03-19T15:40:00.000Z',
+    },
+  ],
+};
 
-export const demoRecommendedIds = ['post-01', 'post-03', 'post-02'];
+export const demoCommunityPosts: CommunityPostSummary[] = Object.values(
+  demoCommunityPostDetails,
+).map(toPostSummary);
 
-const demoComments: CommunityComment[] = [
-  {
-    id: 'comment-01',
-    postId: 'post-01',
-    content: '把过程拆给别人看这点特别认同，社区价值就体现在这里。',
-    publishedAt: '2026-03-18T10:20:00.000Z',
-    likeCount: 16,
-    author: demoCurrentUser,
-    parentCommentId: null,
-    replyToUser: null,
-  },
-  {
-    id: 'comment-02',
-    postId: 'post-01',
-    content: '我也是先清结构后补装饰，不然越做越乱。',
-    publishedAt: '2026-03-18T11:10:00.000Z',
-    likeCount: 8,
-    author: demoProfiles[2],
-    parentCommentId: 'comment-01',
-    replyToUser: demoCurrentUser,
-  },
-  {
-    id: 'comment-03',
-    postId: 'post-03',
-    content: '推荐先复用热门这个折中很合理，先把闭环跑通。',
-    publishedAt: '2026-03-19T07:10:00.000Z',
-    likeCount: 11,
-    author: demoProfiles[1],
-    parentCommentId: null,
-    replyToUser: null,
-  },
-];
+export const demoCommunityFeedBySort: Record<
+  CommunityFeedSort,
+  CommunityPostSummary[]
+> = {
+  recommended: buildDemoFeedFromDetails(demoCommunityPostDetails, 'recommended'),
+  latest: buildDemoFeedFromDetails(demoCommunityPostDetails, 'latest'),
+  hot: buildDemoFeedFromDetails(demoCommunityPostDetails, 'hot'),
+};
 
-export function getDemoPostById(postId: string) {
-  return detailFeed.find(post => post.id === postId) ?? null;
+export const demoCommunityFeed = demoCommunityFeedBySort.recommended;
+export const demoCommunityComments = demoCommunityCommentsByPostId;
+
+export function createInitialCommunityPostDetails() {
+  return clonePostDetails(demoCommunityPostDetails);
 }
 
-export function getDemoCommentsByPostId(postId: string) {
-  return demoComments.filter(comment => comment.postId === postId);
+export function createInitialCommunityCommentsByPostId() {
+  return cloneCommentsByPostId(demoCommunityCommentsByPostId);
+}
+
+export function buildDemoFeedFromDetails(
+  postDetails: Record<string, CommunityPostDetail>,
+  feedSort: CommunityFeedSort,
+): CommunityPostSummary[] {
+  const posts = Object.values(postDetails).map(toPostSummary);
+
+  if (feedSort === 'latest') {
+    return posts.sort(
+      (left, right) =>
+        new Date(right.publishedAt).getTime() - new Date(left.publishedAt).getTime(),
+    );
+  }
+
+  if (feedSort === 'hot') {
+    return posts.sort((left, right) => {
+      const leftScore =
+        left.stats.likeCount * 3 +
+        left.stats.commentCount * 2 +
+        left.stats.favoriteCount * 4;
+      const rightScore =
+        right.stats.likeCount * 3 +
+        right.stats.commentCount * 2 +
+        right.stats.favoriteCount * 4;
+      return rightScore - leftScore;
+    });
+  }
+
+  return posts.sort((left, right) => {
+    const rightDate = new Date(right.publishedAt).getTime();
+    const leftDate = new Date(left.publishedAt).getTime();
+    const rightScore =
+      right.stats.likeCount * 2 +
+      right.stats.favoriteCount * 3 +
+      right.stats.commentCount * 2;
+    const leftScore =
+      left.stats.likeCount * 2 +
+      left.stats.favoriteCount * 3 +
+      left.stats.commentCount * 2;
+
+    if (rightScore === leftScore) {
+      return rightDate - leftDate;
+    }
+
+    return rightScore - leftScore;
+  });
+}
+
+export function createLocalComment(
+  input: LocalCreateCommentInput,
+): CommunityComment {
+  const now = new Date().toISOString();
+
+  return {
+    id: `comment-local-${Date.now()}`,
+    postId: input.postId,
+    author: demoCurrentUser,
+    content: input.content,
+    publishedAt: now,
+  };
+}
+
+export function createLocalPostDetail(
+  input: LocalCreatePostInput,
+): CommunityPostDetail {
+  const createdAt = new Date().toISOString();
+  const postId = `post-local-${Date.now()}`;
+  const summary =
+    input.content.length > 80
+      ? `${input.content.slice(0, 80).trim()}...`
+      : input.content;
+
+  return {
+    id: postId,
+    author: demoCurrentUser,
+    publishedAt: createdAt,
+    title: input.title,
+    summary,
+    content: input.content,
+    images: input.imageUrl
+      ? [
+          {
+            id: `${postId}-image-01`,
+            url: input.imageUrl,
+            alt: `${input.title} 配图`,
+          },
+        ]
+      : [],
+    stats: {
+      likeCount: 0,
+      commentCount: 0,
+      favoriteCount: 0,
+    },
+    viewerContext: {
+      liked: false,
+      favorited: false,
+    },
+  };
+}
+
+export function getDemoPostDetail(
+  postId: string,
+): CommunityPostDetail | undefined {
+  const post = demoCommunityPostDetails[postId];
+  return post ? { ...post, images: [...post.images] } : undefined;
+}
+
+export function getDemoComments(postId: string): CommentItem[] {
+  return [...(demoCommunityCommentsByPostId[postId] ?? [])];
+}
+
+function toPostSummary(post: CommunityPostDetail): CommunityPostSummary {
+  return {
+    id: post.id,
+    author: post.author,
+    publishedAt: post.publishedAt,
+    title: post.title,
+    summary: post.summary,
+    images: [...post.images],
+    stats: { ...post.stats },
+    viewerContext: { ...post.viewerContext },
+  };
+}
+
+function clonePostDetails(
+  source: Record<string, CommunityPostDetail>,
+): Record<string, CommunityPostDetail> {
+  return Object.fromEntries(
+    Object.entries(source).map(([key, value]) => [
+      key,
+      {
+        ...value,
+        author: { ...value.author },
+        images: value.images.map(image => ({ ...image })),
+        stats: { ...value.stats },
+        viewerContext: { ...value.viewerContext },
+      },
+    ]),
+  );
+}
+
+function cloneCommentsByPostId(
+  source: Record<string, CommunityComment[]>,
+): Record<string, CommunityComment[]> {
+  return Object.fromEntries(
+    Object.entries(source).map(([key, comments]) => [
+      key,
+      comments.map(comment => ({
+        ...comment,
+        author: { ...comment.author },
+      })),
+    ]),
+  );
 }

@@ -1,46 +1,92 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
+  Alert,
+  Image,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
+  TextInput,
   View,
 } from 'react-native';
-
+import { Asset, launchImageLibrary } from 'react-native-image-picker';
 import AIColorTuning from './AIColorTuning';
 import ThreeDModeling from './ThreeDModeling';
-import { CommunityHomeSection } from './src/community/CommunityHomeSection';
-import { communityApiPaths } from './shared/community/contracts';
-import { demoMyProfile } from './shared/community/demoData';
+import {
+  CommunityComment,
+  CommunityFeedSort,
+  LocalCreatePostInput,
+} from './shared/community/contracts';
+import {
+  buildDemoFeedFromDetails,
+  createInitialCommunityCommentsByPostId,
+  createInitialCommunityPostDetails,
+  createLocalComment,
+  createLocalPostDetail,
+} from './shared/community/demoData';
+import CommunityHomeSection from './src/community/CommunityHomeSection';
+import CommunityPostDetailView from './src/community/CommunityPostDetailView';
 
-type AppTab = 'home' | 'capture' | 'ai' | 'profile';
-type DraftPostState = {
-  title: string;
-  content: string;
-  imageUrl: string;
-};
+type TabKey = 'home' | 'capture' | 'ai' | 'profile';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<AppTab>('home');
+  const [activeTab, setActiveTab] = useState<TabKey>('home');
   const [showAIColorTuning, setShowAIColorTuning] = useState(false);
   const [showThreeDModeling, setShowThreeDModeling] = useState(false);
-  const [draftPost, setDraftPost] = useState<DraftPostState>({
-    title: '',
-    content: '',
-    imageUrl: '',
-  });
+  const [communityFeedSort, setCommunityFeedSort] =
+    useState<CommunityFeedSort>('recommended');
+  const [communityPostDetails, setCommunityPostDetails] = useState(() =>
+    createInitialCommunityPostDetails(),
+  );
+  const [communityCommentsByPostId, setCommunityCommentsByPostId] = useState(() =>
+    createInitialCommunityCommentsByPostId(),
+  );
+  const [selectedPostId, setSelectedPostId] = useState<string | null>(null);
+  const [draftComment, setDraftComment] = useState('');
+  const [draftPostTitle, setDraftPostTitle] = useState('');
+  const [draftPostContent, setDraftPostContent] = useState('');
+  const [draftPostImageAsset, setDraftPostImageAsset] = useState<Asset | null>(null);
+  const [postFormMessage, setPostFormMessage] = useState('');
 
-  const renderHomeScreen = () => (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.title}>Vision Genie</Text>
-        <Text style={styles.subtitle}>MAGIC DISCOVERY •</Text>
-      </View>
+  const communityPosts = useMemo(
+    () => buildDemoFeedFromDetails(communityPostDetails, communityFeedSort),
+    [communityFeedSort, communityPostDetails],
+  );
 
+  const selectedPost = selectedPostId ? communityPostDetails[selectedPostId] : null;
+  const selectedComments = selectedPostId
+    ? communityCommentsByPostId[selectedPostId] ?? []
+    : [];
+
+  const renderHomeScreen = () => {
+    if (selectedPostId && selectedPost) {
+      return (
+        <CommunityPostDetailView
+          comments={selectedComments}
+          draftComment={draftComment}
+          onBack={() => {
+            setSelectedPostId(null);
+            setDraftComment('');
+          }}
+          onChangeDraftComment={setDraftComment}
+          onSubmitComment={handleSubmitComment}
+          onToggleFavorite={handleToggleFavorite}
+          onToggleLike={handleToggleLike}
+          post={selectedPost}
+        />
+      );
+    }
+
+    return (
       <ScrollView
         contentContainerStyle={styles.homeScrollContent}
-        showsVerticalScrollIndicator={false}>
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.header}>
+          <Text style={styles.title}>Vision Genie</Text>
+          <Text style={styles.subtitle}>MAGIC DISCOVERY •</Text>
+        </View>
+
         <View style={styles.content}>
           <TouchableOpacity style={styles.card1}>
             <Text style={styles.cardTitle1}>今日 AI 艺术家</Text>
@@ -55,10 +101,15 @@ export default function App() {
           </TouchableOpacity>
         </View>
 
-        <CommunityHomeSection />
+        <CommunityHomeSection
+          currentSort={communityFeedSort}
+          onChangeSort={setCommunityFeedSort}
+          onPressPost={setSelectedPostId}
+          posts={communityPosts}
+        />
       </ScrollView>
-    </View>
-  );
+    );
+  };
 
   const renderCaptureScreen = () => (
     <View style={styles.captureContainer}>
@@ -70,7 +121,8 @@ export default function App() {
       <View style={styles.content}>
         <TouchableOpacity
           style={styles.captureCard1}
-          onPress={() => setShowAIColorTuning(true)}>
+          onPress={() => setShowAIColorTuning(true)}
+        >
           <Text style={styles.captureCardIcon}>🎨</Text>
           <Text style={styles.captureCardTitle}>AI 智能调色</Text>
         </TouchableOpacity>
@@ -78,7 +130,8 @@ export default function App() {
         <View style={styles.captureCardRow}>
           <TouchableOpacity
             style={styles.captureCard2}
-            onPress={() => setShowThreeDModeling(true)}>
+            onPress={() => setShowThreeDModeling(true)}
+          >
             <Text style={styles.captureCardIcon}>📦</Text>
             <Text style={styles.captureCardTitle}>3D 建模</Text>
           </TouchableOpacity>
@@ -92,114 +145,305 @@ export default function App() {
     </View>
   );
 
-  const renderProfileScreen = () => {
-    const isDraftReady =
-      draftPost.title.trim().length > 0 && draftPost.content.trim().length > 0;
+  const renderProfileScreen = () => (
+    <ScrollView
+      contentContainerStyle={styles.profileScrollContent}
+      showsVerticalScrollIndicator={false}
+    >
+      <View style={styles.header}>
+        <Text style={styles.title}>我的</Text>
+        <Text style={styles.subtitle}>COMMUNITY CREATOR •</Text>
+      </View>
 
-    return (
-      <View style={styles.profileContainer}>
-        <View style={styles.header}>
-          <Text style={styles.title}>我的</Text>
-          <Text style={styles.subtitle}>PROFILE & COMMUNITY •</Text>
+      <View style={styles.profileCard}>
+        <View style={styles.profileAvatar}>
+          <Text style={styles.profileAvatarText}>VG</Text>
         </View>
+        <Text style={styles.profileName}>个人信息展示预留区</Text>
+        <Text style={styles.profileBio}>
+          后续可在这里接入头像、昵称、简介、收藏、浏览历史和社区统计。
+        </Text>
+        <View style={styles.profilePlaceholderRow}>
+          <View style={styles.profilePlaceholderBox}>
+            <Text style={styles.profilePlaceholderLabel}>我的帖子</Text>
+          </View>
+          <View style={styles.profilePlaceholderBox}>
+            <Text style={styles.profilePlaceholderLabel}>我的收藏</Text>
+          </View>
+          <View style={styles.profilePlaceholderBox}>
+            <Text style={styles.profilePlaceholderLabel}>历史记录</Text>
+          </View>
+        </View>
+      </View>
 
-        <ScrollView
-          contentContainerStyle={styles.profileScrollContent}
-          showsVerticalScrollIndicator={false}>
-          <View style={styles.profileHeroCard}>
-            <View style={styles.profileAvatar}>
-              <Text style={styles.profileAvatarText}>
-                {demoMyProfile.displayName[0]}
+      <View style={styles.postComposerCard}>
+        <Text style={styles.postComposerTitle}>发布社区帖子</Text>
+        <Text style={styles.postComposerHint}>
+          发布后会同步显示在首页社区帖子流，并可直接进入详情浏览。
+        </Text>
+
+        <TextInput
+          placeholder="输入帖子标题"
+          placeholderTextColor="rgba(255, 255, 255, 0.6)"
+          style={styles.input}
+          testID="create-post-title-input"
+          value={draftPostTitle}
+          onChangeText={text => {
+            setDraftPostTitle(text);
+            if (postFormMessage) {
+              setPostFormMessage('');
+            }
+          }}
+        />
+
+        <TextInput
+          multiline
+          placeholder="分享你的灵感、技巧或作品故事"
+          placeholderTextColor="rgba(255, 255, 255, 0.6)"
+          style={[styles.input, styles.textArea]}
+          testID="create-post-content-input"
+          textAlignVertical="top"
+          value={draftPostContent}
+          onChangeText={text => {
+            setDraftPostContent(text);
+            if (postFormMessage) {
+              setPostFormMessage('');
+            }
+          }}
+        />
+
+        <TouchableOpacity
+          style={styles.imagePickerButton}
+          testID="create-post-image-select"
+          onPress={handlePickPostImage}
+        >
+          <Text style={styles.imagePickerButtonText}>
+            {draftPostImageAsset?.uri ? '重新选择图片' : '从相册选择图片'}
+          </Text>
+        </TouchableOpacity>
+
+        {draftPostImageAsset?.uri ? (
+          <View style={styles.selectedImageCard}>
+            <Image
+              source={{ uri: draftPostImageAsset.uri }}
+              style={styles.selectedImagePreview}
+              testID="create-post-image-preview"
+            />
+            <View style={styles.selectedImageMeta}>
+              <Text style={styles.selectedImageName}>
+                {draftPostImageAsset.fileName || '已选择图片'}
+              </Text>
+              <Text style={styles.selectedImageSubtext}>
+                {draftPostImageAsset.fileSize
+                  ? `${Math.max(
+                      1,
+                      Math.round(draftPostImageAsset.fileSize / 1024),
+                    )} KB`
+                  : '本地图片'}
               </Text>
             </View>
-            <View style={styles.profileHeroTextBlock}>
-              <Text style={styles.profileName}>{demoMyProfile.displayName}</Text>
-              <Text style={styles.profileHandle}>@{demoMyProfile.handle}</Text>
-              <Text style={styles.profileBio}>
-                这里预留给完整 App 的个人资料区，后续可以接昵称、头像、简介、关注数、
-                作品数和社区统计。
-              </Text>
-            </View>
-          </View>
-
-          <View style={styles.profilePlaceholderCard}>
-            <Text style={styles.sectionLabel}>个人信息展示预留区</Text>
-            <Text style={styles.placeholderTitle}>资料卡、历史记录、收藏入口</Text>
-            <Text style={styles.placeholderDescription}>
-              这块区域先保留布局空间，后面你们和协作者整合时可以继续塞入账号信息、
-              用户设置、收藏列表或个人作品集。
-            </Text>
-          </View>
-
-          <View style={styles.composerCard}>
-            <Text style={styles.sectionLabel}>我的社区发帖</Text>
-            <Text style={styles.composerTitle}>把发帖入口收进“我的”</Text>
-            <Text style={styles.placeholderDescription}>
-              当前先把发帖表单封装进个人中心，后续发布时直接对接
-              {` ${communityApiPaths.posts}`} 即可。
-            </Text>
-
-            <TextInput
-              placeholder="帖子标题"
-              placeholderTextColor="rgba(255,255,255,0.55)"
-              style={styles.input}
-              value={draftPost.title}
-              onChangeText={title =>
-                setDraftPost(current => ({
-                  ...current,
-                  title,
-                }))
-              }
-            />
-            <TextInput
-              multiline
-              placeholder="写下你想发布到社区的内容"
-              placeholderTextColor="rgba(255,255,255,0.55)"
-              style={[styles.input, styles.textArea]}
-              value={draftPost.content}
-              onChangeText={content =>
-                setDraftPost(current => ({
-                  ...current,
-                  content,
-                }))
-              }
-            />
-            <TextInput
-              placeholder="图片 URL（预留上传入口）"
-              placeholderTextColor="rgba(255,255,255,0.55)"
-              style={styles.input}
-              value={draftPost.imageUrl}
-              onChangeText={imageUrl =>
-                setDraftPost(current => ({
-                  ...current,
-                  imageUrl,
-                }))
-              }
-            />
-
             <TouchableOpacity
-              style={[
-                styles.publishButton,
-                !isDraftReady && styles.publishButtonDisabled,
-              ]}
-              disabled={!isDraftReady}
-              onPress={() =>
-                setDraftPost({
-                  title: '',
-                  content: '',
-                  imageUrl: '',
-                })
-              }>
-              <Text style={styles.publishButtonText}>发布演示帖子</Text>
+              style={styles.removeImageButton}
+              testID="create-post-image-remove"
+              onPress={() => setDraftPostImageAsset(null)}
+            >
+              <Text style={styles.removeImageButtonText}>移除</Text>
             </TouchableOpacity>
           </View>
-        </ScrollView>
+        ) : (
+          <Text style={styles.imagePickerHint}>
+            系统会打开手机相册选择图片，选中的图片会随帖子一起展示。
+          </Text>
+        )}
+
+        {postFormMessage ? (
+          <Text style={styles.postFormMessage}>{postFormMessage}</Text>
+        ) : null}
+
+        <TouchableOpacity
+          style={styles.publishButton}
+          testID="create-post-submit"
+          onPress={handleSubmitPost}
+        >
+          <Text style={styles.publishButtonText}>发布帖子</Text>
+        </TouchableOpacity>
       </View>
-    );
-  };
+    </ScrollView>
+  );
+
+  function handleToggleLike() {
+    if (!selectedPostId) {
+      return;
+    }
+
+    setCommunityPostDetails(previous => {
+      const current = previous[selectedPostId];
+      if (!current) {
+        return previous;
+      }
+
+      const nextLiked = !current.viewerContext.liked;
+      const nextLikeCount = Math.max(
+        0,
+        current.stats.likeCount + (nextLiked ? 1 : -1),
+      );
+
+      return {
+        ...previous,
+        [selectedPostId]: {
+          ...current,
+          stats: {
+            ...current.stats,
+            likeCount: nextLikeCount,
+          },
+          viewerContext: {
+            ...current.viewerContext,
+            liked: nextLiked,
+          },
+        },
+      };
+    });
+  }
+
+  function handleToggleFavorite() {
+    if (!selectedPostId) {
+      return;
+    }
+
+    setCommunityPostDetails(previous => {
+      const current = previous[selectedPostId];
+      if (!current) {
+        return previous;
+      }
+
+      const nextFavorited = !current.viewerContext.favorited;
+      const nextFavoriteCount = Math.max(
+        0,
+        current.stats.favoriteCount + (nextFavorited ? 1 : -1),
+      );
+
+      return {
+        ...previous,
+        [selectedPostId]: {
+          ...current,
+          stats: {
+            ...current.stats,
+            favoriteCount: nextFavoriteCount,
+          },
+          viewerContext: {
+            ...current.viewerContext,
+            favorited: nextFavorited,
+          },
+        },
+      };
+    });
+  }
+
+  function handleSubmitComment() {
+    if (!selectedPostId) {
+      return;
+    }
+
+    const nextContent = draftComment.trim();
+    if (!nextContent) {
+      return;
+    }
+
+    const nextComment: CommunityComment = createLocalComment({
+      content: nextContent,
+      postId: selectedPostId,
+    });
+
+    setCommunityCommentsByPostId(previous => ({
+      ...previous,
+      [selectedPostId]: [...(previous[selectedPostId] ?? []), nextComment],
+    }));
+
+    setCommunityPostDetails(previous => {
+      const current = previous[selectedPostId];
+      if (!current) {
+        return previous;
+      }
+
+      return {
+        ...previous,
+        [selectedPostId]: {
+          ...current,
+          stats: {
+            ...current.stats,
+            commentCount: current.stats.commentCount + 1,
+          },
+        },
+      };
+    });
+
+    setDraftComment('');
+  }
+
+  function handleSubmitPost() {
+    const nextTitle = draftPostTitle.trim();
+    const nextContent = draftPostContent.trim();
+    if (!nextTitle || !nextContent) {
+      setPostFormMessage('标题和正文需要填写完整后才能发布。');
+      return;
+    }
+
+    const postInput: LocalCreatePostInput = {
+      content: nextContent,
+      imageUrl: draftPostImageAsset?.uri,
+      title: nextTitle,
+    };
+
+    const nextPost = createLocalPostDetail(postInput);
+
+    setCommunityPostDetails(previous => ({
+      [nextPost.id]: nextPost,
+      ...previous,
+    }));
+
+    setCommunityCommentsByPostId(previous => ({
+      ...previous,
+      [nextPost.id]: [],
+    }));
+
+    setDraftPostTitle('');
+    setDraftPostContent('');
+    setDraftPostImageAsset(null);
+    setPostFormMessage('帖子已发布，正在打开详情预览。');
+    setCommunityFeedSort('latest');
+    setActiveTab('home');
+    setSelectedPostId(nextPost.id);
+    setDraftComment('');
+  }
+
+  async function handlePickPostImage() {
+    try {
+      const result = await launchImageLibrary({
+        mediaType: 'photo',
+        quality: 0.8,
+        selectionLimit: 1,
+      });
+
+      if (result.didCancel) {
+        return;
+      }
+
+      const nextAsset = result.assets?.[0];
+      if (!nextAsset?.uri) {
+        setPostFormMessage('图片选择失败，请重新尝试。');
+        return;
+      }
+
+      setDraftPostImageAsset(nextAsset);
+      setPostFormMessage('');
+    } catch (error) {
+      setPostFormMessage('打开相册失败，请检查设备权限后重试。');
+      Alert.alert('打开相册失败', '请检查设备权限或稍后重试。');
+    }
+  }
 
   return (
-    <View style={styles.container}>
+    <View style={styles.screen}>
       {showAIColorTuning ? (
         <AIColorTuning onBack={() => setShowAIColorTuning(false)} />
       ) : showThreeDModeling ? (
@@ -219,19 +463,15 @@ export default function App() {
 
           <View style={styles.tabBar}>
             <TouchableOpacity
-              style={[
-                styles.tabItem,
-                activeTab === 'home' && styles.activeTabItem,
-              ]}
-              onPress={() => setActiveTab('home')}>
+              style={[styles.tabItem, activeTab === 'home' && styles.activeTabItem]}
+              onPress={() => setActiveTab('home')}
+            >
               <View style={styles.tabIcon}>
                 <Text style={styles.tabIconText}>🏠</Text>
               </View>
               <Text
-                style={[
-                  styles.tabText,
-                  activeTab === 'home' && styles.activeTabText,
-                ]}>
+                style={[styles.tabText, activeTab === 'home' && styles.activeTabText]}
+              >
                 首页
               </Text>
             </TouchableOpacity>
@@ -240,7 +480,8 @@ export default function App() {
                 styles.tabItem,
                 activeTab === 'capture' && styles.activeTabItem,
               ]}
-              onPress={() => setActiveTab('capture')}>
+              onPress={() => setActiveTab('capture')}
+            >
               <View style={styles.tabIcon}>
                 <Text style={styles.tabIconText}>📷</Text>
               </View>
@@ -248,24 +489,21 @@ export default function App() {
                 style={[
                   styles.tabText,
                   activeTab === 'capture' && styles.activeTabText,
-                ]}>
+                ]}
+              >
                 拍照
               </Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[
-                styles.tabItem,
-                activeTab === 'ai' && styles.activeTabItem,
-              ]}
-              onPress={() => setActiveTab('ai')}>
+              style={[styles.tabItem, activeTab === 'ai' && styles.activeTabItem]}
+              onPress={() => setActiveTab('ai')}
+            >
               <View style={styles.tabIcon}>
                 <Text style={styles.tabIconText}>✨</Text>
               </View>
               <Text
-                style={[
-                  styles.tabText,
-                  activeTab === 'ai' && styles.activeTabText,
-                ]}>
+                style={[styles.tabText, activeTab === 'ai' && styles.activeTabText]}
+              >
                 AI助手
               </Text>
             </TouchableOpacity>
@@ -274,7 +512,8 @@ export default function App() {
                 styles.tabItem,
                 activeTab === 'profile' && styles.activeTabItem,
               ]}
-              onPress={() => setActiveTab('profile')}>
+              onPress={() => setActiveTab('profile')}
+            >
               <View style={styles.tabIcon}>
                 <Text style={styles.tabIconText}>👤</Text>
               </View>
@@ -282,7 +521,8 @@ export default function App() {
                 style={[
                   styles.tabText,
                   activeTab === 'profile' && styles.activeTabText,
-                ]}>
+                ]}
+              >
                 我的
               </Text>
             </TouchableOpacity>
@@ -294,6 +534,10 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
+  screen: {
+    flex: 1,
+    backgroundColor: '#6a11cb',
+  },
   container: {
     flex: 1,
     backgroundColor: '#6a11cb',
@@ -302,14 +546,11 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#1a365d',
   },
-  profileContainer: {
-    flex: 1,
-    backgroundColor: '#34206b',
-  },
   header: {
     paddingTop: 50,
     paddingLeft: 30,
-    paddingBottom: 30,
+    paddingBottom: 24,
+    paddingRight: 30,
   },
   title: {
     fontSize: 40,
@@ -322,16 +563,13 @@ const styles = StyleSheet.create({
     marginTop: 5,
   },
   homeScrollContent: {
-    paddingBottom: 28,
+    paddingBottom: 32,
   },
   profileScrollContent: {
-    paddingHorizontal: 24,
-    paddingBottom: 28,
-    gap: 18,
+    paddingBottom: 40,
   },
   content: {
     paddingHorizontal: 30,
-    justifyContent: 'center',
   },
   card1: {
     backgroundColor: 'rgba(255, 255, 255, 0.2)',
@@ -346,7 +584,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255, 255, 255, 0.1)',
     borderRadius: 20,
     padding: 30,
-    marginBottom: 12,
+    marginBottom: 24,
   },
   cardTitle1: {
     fontSize: 24,
@@ -410,107 +648,163 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: 'white',
   },
-  profileHeroCard: {
-    borderRadius: 26,
-    backgroundColor: 'rgba(255,255,255,0.14)',
-    padding: 20,
-    flexDirection: 'row',
-    gap: 16,
-    alignItems: 'center',
+  profileCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+    marginHorizontal: 24,
+    borderRadius: 24,
+    padding: 24,
+    marginBottom: 20,
   },
   profileAvatar: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: '#ffeb3b',
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: 'rgba(255, 255, 255, 0.28)',
     alignItems: 'center',
     justifyContent: 'center',
+    marginBottom: 16,
   },
   profileAvatarText: {
-    color: '#34206b',
-    fontSize: 28,
-    fontWeight: '800',
-  },
-  profileHeroTextBlock: {
-    flex: 1,
+    color: 'white',
+    fontSize: 22,
+    fontWeight: '700',
   },
   profileName: {
     color: 'white',
-    fontSize: 24,
-    fontWeight: '800',
-  },
-  profileHandle: {
-    color: 'rgba(255,255,255,0.75)',
-    marginTop: 4,
-    fontSize: 13,
+    fontSize: 22,
+    fontWeight: '700',
   },
   profileBio: {
-    color: 'rgba(255,255,255,0.82)',
-    marginTop: 10,
-    lineHeight: 20,
+    color: 'rgba(255, 255, 255, 0.82)',
     fontSize: 14,
-  },
-  profilePlaceholderCard: {
-    borderRadius: 24,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    padding: 20,
-  },
-  composerCard: {
-    borderRadius: 24,
-    backgroundColor: 'rgba(255,255,255,0.14)',
-    padding: 20,
-  },
-  sectionLabel: {
-    color: '#ffeb3b',
-    fontSize: 12,
-    fontWeight: '800',
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-  },
-  placeholderTitle: {
-    color: 'white',
-    fontSize: 22,
-    fontWeight: '800',
-    marginTop: 8,
-  },
-  composerTitle: {
-    color: 'white',
-    fontSize: 22,
-    fontWeight: '800',
-    marginTop: 8,
-  },
-  placeholderDescription: {
-    color: 'rgba(255,255,255,0.8)',
-    fontSize: 14,
-    lineHeight: 21,
+    lineHeight: 22,
     marginTop: 10,
   },
-  input: {
-    borderRadius: 18,
-    backgroundColor: 'rgba(255,255,255,0.12)',
-    color: 'white',
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    marginTop: 14,
+  profilePlaceholderRow: {
+    flexDirection: 'row',
+    marginTop: 18,
+    justifyContent: 'space-between',
   },
-  textArea: {
-    minHeight: 120,
-    textAlignVertical: 'top',
-  },
-  publishButton: {
-    marginTop: 16,
-    borderRadius: 18,
-    backgroundColor: '#ffeb3b',
-    paddingVertical: 14,
+  profilePlaceholderBox: {
+    flex: 1,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderRadius: 16,
+    paddingVertical: 16,
+    marginHorizontal: 4,
     alignItems: 'center',
   },
-  publishButtonDisabled: {
-    backgroundColor: 'rgba(255,235,59,0.45)',
+  profilePlaceholderLabel: {
+    color: 'white',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  postComposerCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    marginHorizontal: 24,
+    borderRadius: 24,
+    padding: 24,
+    marginBottom: 24,
+  },
+  postComposerTitle: {
+    color: 'white',
+    fontSize: 22,
+    fontWeight: '700',
+  },
+  postComposerHint: {
+    color: 'rgba(255, 255, 255, 0.78)',
+    fontSize: 14,
+    lineHeight: 22,
+    marginTop: 8,
+    marginBottom: 18,
+  },
+  input: {
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+    color: 'white',
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    fontSize: 15,
+    marginBottom: 14,
+  },
+  textArea: {
+    minHeight: 130,
+  },
+  postFormMessage: {
+    color: '#ffeb3b',
+    fontSize: 13,
+    marginBottom: 14,
+  },
+  imagePickerButton: {
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+  },
+  imagePickerButtonText: {
+    color: 'white',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  imagePickerHint: {
+    color: 'rgba(255, 255, 255, 0.72)',
+    fontSize: 13,
+    lineHeight: 20,
+    marginBottom: 14,
+  },
+  selectedImageCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    borderRadius: 18,
+    padding: 12,
+    marginBottom: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  selectedImagePreview: {
+    width: 72,
+    height: 72,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+  },
+  selectedImageMeta: {
+    flex: 1,
+    marginLeft: 12,
+    marginRight: 12,
+  },
+  selectedImageName: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  selectedImageSubtext: {
+    color: 'rgba(255, 255, 255, 0.72)',
+    fontSize: 12,
+    marginTop: 6,
+  },
+  removeImageButton: {
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  removeImageButtonText: {
+    color: 'white',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  publishButton: {
+    backgroundColor: '#ff8a5b',
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 16,
   },
   publishButtonText: {
-    color: '#34206b',
-    fontWeight: '800',
-    fontSize: 15,
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '700',
   },
   tabBar: {
     flexDirection: 'row',

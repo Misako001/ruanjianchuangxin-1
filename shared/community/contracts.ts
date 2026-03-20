@@ -1,100 +1,82 @@
-export const communityApiPaths = {
-  baseUrl: 'http://localhost:4010',
-  feed: '/community/feed',
-  posts: '/community/posts',
-  uploads: '/community/uploads/images',
-  me: '/community/me/summary',
-} as const;
+export type CommunityFeedSort = 'recommended' | 'latest' | 'hot';
+export type FeedSort = CommunityFeedSort;
 
-export type CommunityNavigatorTab = {
-  id: 'home' | 'create' | 'me';
-  label: string;
-};
-
-export type FeedSort = 'recommended' | 'latest' | 'hot';
-
-export type CommunityUserSummary = {
+export type CommunityUser = {
   id: string;
-  externalAccountId: string;
-  displayName: string;
-  handle: string;
-  avatarUrl: string | null;
+  name: string;
+  avatarText: string;
+  bio?: string;
 };
 
-export type CommunityStats = {
+export type CommunityImageAsset = {
+  id: string;
+  url: string;
+  alt: string;
+};
+
+export type CommunityReactionState = {
+  liked: boolean;
+  favorited: boolean;
+};
+
+export type ReactionState = CommunityReactionState;
+
+export type CommunityPostStats = {
   likeCount: number;
   commentCount: number;
   favoriteCount: number;
 };
 
+export type CommunityStats = CommunityPostStats;
+
 export type CommunityPostSummary = {
   id: string;
-  title: string;
-  excerpt: string;
+  author: CommunityUser;
   publishedAt: string;
-  author: CommunityUserSummary;
-  imagePreviewUrls: string[];
-  stats: CommunityStats;
+  title: string;
+  summary: string;
+  images: CommunityImageAsset[];
+  stats: CommunityPostStats;
+  viewerContext: CommunityReactionState;
 };
+
+export type PostSummary = CommunityPostSummary;
 
 export type CommunityPostDetail = CommunityPostSummary & {
   content: string;
-  viewerContext: {
-    liked: boolean;
-    favorited: boolean;
-    canDelete: boolean;
-  };
 };
+
+export type PostDetail = CommunityPostDetail;
 
 export type CommunityComment = {
   id: string;
   postId: string;
+  author: CommunityUser;
   content: string;
   publishedAt: string;
-  likeCount: number;
-  author: CommunityUserSummary;
-  parentCommentId: string | null;
-  replyToUser: CommunityUserSummary | null;
 };
 
-export type CommunityProfile = CommunityUserSummary & {
-  bio: string;
-  stats: {
-    postCount: number;
-    commentCount: number;
-    favoriteCount: number;
-  };
-};
+export type CommentItem = CommunityComment;
 
-export type CommunityFeedResponse = {
-  items: CommunityPostSummary[];
+export type PaginatedResponse<T> = {
+  items: T[];
   nextCursor: string | null;
-  sort: FeedSort;
 };
 
-export type CreatePostInput = {
-  title: string;
-  content: string;
-  imageUrls: string[];
-};
-
-export type CreateCommentInput = {
-  content: string;
-  parentCommentId?: string;
-  replyToUserId?: string;
-};
+export type CommunityPaginatedResponse<T> = PaginatedResponse<T>;
 
 export type UploadImageResult = {
+  id: string;
   url: string;
-  width: number;
-  height: number;
-  mimeType: string;
 };
 
-export function createCommunityNavigatorTabs(): CommunityNavigatorTab[] {
-  return [
-    { id: 'home', label: '首页' },
-    { id: 'create', label: '发帖' },
-    { id: 'me', label: '我的' },
-  ];
-}
+export type LocalCreateCommentInput = {
+  postId: string;
+  content: string;
+};
+
+export type LocalCreatePostInput = {
+  title: string;
+  content: string;
+  imageUrl?: string;
+};

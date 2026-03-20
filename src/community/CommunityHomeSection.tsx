@@ -1,307 +1,232 @@
-import React, { useMemo, useState } from 'react';
+import React from 'react';
+import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import {
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+  CommunityFeedSort,
+  CommunityPostSummary,
+} from '../../shared/community/contracts';
 
-import type { CommunityPostSummary } from '../../shared/community/contracts';
-import {
-  demoFeed,
-  demoRecommendedIds,
-} from '../../shared/community/demoData';
+type CommunityHomeSectionProps = {
+  posts: CommunityPostSummary[];
+  currentSort: CommunityFeedSort;
+  onChangeSort: (sort: CommunityFeedSort) => void;
+  onPressPost: (postId: string) => void;
+};
 
-type FeedSort = 'recommended' | 'latest' | 'hot';
+const SORT_OPTIONS: Array<{ label: string; value: CommunityFeedSort }> = [
+  { label: '推荐', value: 'recommended' },
+  { label: '最新', value: 'latest' },
+  { label: '热门', value: 'hot' },
+];
 
-export function CommunityHomeSection() {
-  const [feedSort, setFeedSort] = useState<FeedSort>('recommended');
-
-  const feed = useMemo(() => {
-    if (feedSort === 'latest') {
-      return [...demoFeed].sort((left, right) =>
-        right.publishedAt.localeCompare(left.publishedAt),
-      );
-    }
-
-    if (feedSort === 'hot') {
-      return [...demoFeed].sort(
-        (left, right) =>
-          right.stats.likeCount +
-          right.stats.commentCount * 2 -
-          (left.stats.likeCount + left.stats.commentCount * 2),
-      );
-    }
-
-    return [...demoRecommendedIds]
-      .map(id => demoFeed.find(post => post.id === id))
-      .filter(Boolean) as CommunityPostSummary[];
-  }, [feedSort]);
-
+export default function CommunityHomeSection({
+  posts,
+  currentSort,
+  onChangeSort,
+  onPressPost,
+}: CommunityHomeSectionProps) {
   return (
-    <View style={styles.wrapper}>
-      <View style={styles.headerCard}>
-        <View style={styles.headerTextBlock}>
-          <Text style={styles.eyebrow}>Home Community Section</Text>
-          <Text style={styles.title}>首页社区动态区块</Text>
-          <Text style={styles.description}>
-            这里是为后续整合预留的首页社区模块。根 App 继续保持原始壳，社区帖子流以独立区块形式接入首页。
-          </Text>
-        </View>
-        <View style={styles.badge}>
-          <Text style={styles.badgeText}>可独立搬运</Text>
-        </View>
+    <View style={styles.section}>
+      <View style={styles.sectionHeader}>
+        <Text style={styles.sectionTitle}>社区精选</Text>
+        <Text style={styles.sectionSubtitle}>在首页直接浏览社区帖子与创作灵感</Text>
       </View>
 
-      <View style={styles.segmentedControl}>
-        {(['recommended', 'latest', 'hot'] as FeedSort[]).map(sort => {
-          const isActive = sort === feedSort;
-
+      <View style={styles.sortRow}>
+        {SORT_OPTIONS.map(option => {
+          const selected = option.value === currentSort;
           return (
             <Pressable
-              key={sort}
-              onPress={() => setFeedSort(sort)}
-              style={[
-                styles.segmentButton,
-                isActive ? styles.segmentButtonActive : null,
-              ]}>
-              <Text
-                style={[
-                  styles.segmentButtonText,
-                  isActive ? styles.segmentButtonTextActive : null,
-                ]}>
-                {sort === 'recommended'
-                  ? '推荐'
-                  : sort === 'latest'
-                    ? '最新'
-                    : '热门'}
+              key={option.value}
+              style={[styles.sortChip, selected && styles.sortChipActive]}
+              testID={`community-sort-${option.value}`}
+              onPress={() => onChangeSort(option.value)}
+            >
+              <Text style={[styles.sortChipText, selected && styles.sortChipTextActive]}>
+                {option.label}
               </Text>
             </Pressable>
           );
         })}
       </View>
 
-      <View style={styles.summaryRow}>
-        <View style={styles.summaryCard}>
-          <Text style={styles.summaryLabel}>首页可见帖子</Text>
-          <Text style={styles.summaryValue}>{feed.length}</Text>
-        </View>
-        <View style={styles.summaryCard}>
-          <Text style={styles.summaryLabel}>当前最热点赞</Text>
-          <Text style={styles.summaryValue}>{feed[0]?.stats.likeCount ?? 0}</Text>
-        </View>
-      </View>
-
-      {feed.map(post => (
-        <View key={post.id} style={styles.postCard}>
-          <View style={styles.postHeaderRow}>
-            <View style={styles.avatarCircle}>
-              <Text style={styles.avatarText}>{post.author.displayName[0]}</Text>
+      {posts.map(post => (
+        <Pressable
+          key={post.id}
+          style={styles.card}
+          testID={`community-post-card-${post.id}`}
+          onPress={() => onPressPost(post.id)}
+        >
+          <View style={styles.cardTopRow}>
+            <View style={styles.avatar}>
+              <Text style={styles.avatarText}>{post.author.avatarText}</Text>
             </View>
-            <View style={styles.postHeaderText}>
-              <Text style={styles.postAuthorName}>{post.author.displayName}</Text>
-              <Text style={styles.postTimestamp}>{formatDate(post.publishedAt)}</Text>
-            </View>
-            <View style={styles.scopeBadge}>
-              <Text style={styles.scopeBadgeText}>首页社区</Text>
+            <View style={styles.meta}>
+              <Text style={styles.author}>{post.author.name}</Text>
+              <Text style={styles.time}>{formatRelativeLabel(post.publishedAt)}</Text>
             </View>
           </View>
 
-          <Text style={styles.postTitle}>{post.title}</Text>
-          <Text style={styles.postExcerpt}>{post.excerpt}</Text>
+          <Text style={styles.cardTitle}>{post.title}</Text>
+          <Text style={styles.cardSummary}>{post.summary}</Text>
+
+          {post.images.length > 0 ? (
+            <View style={styles.imageBlock}>
+              <Image
+                source={{ uri: post.images[0].url }}
+                style={styles.imagePreview}
+                resizeMode="cover"
+              />
+              {post.images.length > 1 ? (
+                <View style={styles.imageCountBadge}>
+                  <Text style={styles.imageCountText}>+{post.images.length - 1}</Text>
+                </View>
+              ) : null}
+            </View>
+          ) : null}
 
           <View style={styles.statsRow}>
-            <StatPill label="点赞" value={post.stats.likeCount} />
-            <StatPill label="评论" value={post.stats.commentCount} />
-            <StatPill label="收藏" value={post.stats.favoriteCount} />
+            <Text style={styles.statText}>点赞 {post.stats.likeCount}</Text>
+            <Text style={styles.statText}>评论 {post.stats.commentCount}</Text>
+            <Text style={styles.statText}>收藏 {post.stats.favoriteCount}</Text>
           </View>
-        </View>
+        </Pressable>
       ))}
     </View>
   );
 }
 
-function StatPill({ label, value }: { label: string; value: number }) {
-  return (
-    <View style={styles.statPill}>
-      <Text style={styles.statValue}>{value}</Text>
-      <Text style={styles.statLabel}>{label}</Text>
-    </View>
+function formatRelativeLabel(isoDate: string) {
+  const diffInHours = Math.max(
+    1,
+    Math.round((Date.now() - new Date(isoDate).getTime()) / (1000 * 60 * 60)),
   );
-}
 
-function formatDate(isoString: string) {
-  return isoString.slice(0, 10).replaceAll('-', '.');
+  if (diffInHours < 24) {
+    return `${diffInHours} 小时前`;
+  }
+
+  return `${Math.round(diffInHours / 24)} 天前`;
 }
 
 const styles = StyleSheet.create({
-  wrapper: {
-    paddingHorizontal: 16,
-    paddingTop: 4,
-    gap: 16,
+  section: {
+    paddingHorizontal: 24,
+    paddingTop: 8,
   },
-  headerCard: {
-    borderRadius: 24,
-    backgroundColor: '#1e293b',
-    padding: 20,
-    gap: 12,
+  sectionHeader: {
+    marginBottom: 14,
   },
-  headerTextBlock: {
-    gap: 8,
-  },
-  eyebrow: {
-    color: '#f59e0b',
-    fontSize: 12,
-    fontWeight: '800',
-    letterSpacing: 1,
-    textTransform: 'uppercase',
-  },
-  title: {
-    color: '#f8fafc',
+  sectionTitle: {
     fontSize: 24,
-    fontWeight: '800',
+    fontWeight: '700',
+    color: 'white',
   },
-  description: {
-    color: '#cbd5e1',
-    lineHeight: 22,
+  sectionSubtitle: {
+    marginTop: 6,
+    color: 'rgba(255, 255, 255, 0.75)',
+    fontSize: 14,
+    lineHeight: 20,
   },
-  badge: {
-    alignSelf: 'flex-start',
+  sortRow: {
+    flexDirection: 'row',
+    marginBottom: 18,
+  },
+  sortChip: {
     borderRadius: 999,
-    backgroundColor: '#ecfdf5',
-    paddingHorizontal: 12,
+    paddingHorizontal: 16,
     paddingVertical: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    marginRight: 10,
   },
-  badgeText: {
-    color: '#047857',
-    fontWeight: '800',
-    fontSize: 12,
+  sortChipActive: {
+    backgroundColor: '#ffeb3b',
   },
-  segmentedControl: {
-    flexDirection: 'row',
-    borderRadius: 20,
-    backgroundColor: '#efe5d7',
-    padding: 6,
+  sortChipText: {
+    color: 'white',
+    fontSize: 13,
+    fontWeight: '600',
   },
-  segmentButton: {
-    flex: 1,
-    borderRadius: 14,
-    paddingVertical: 10,
-    alignItems: 'center',
+  sortChipTextActive: {
+    color: '#4a2c7a',
   },
-  segmentButtonActive: {
-    backgroundColor: '#fffaf3',
-  },
-  segmentButtonText: {
-    color: '#5d6470',
-    fontWeight: '700',
-  },
-  segmentButtonTextActive: {
-    color: '#1f2937',
-  },
-  summaryRow: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  summaryCard: {
-    flex: 1,
-    borderRadius: 20,
-    backgroundColor: '#fffaf3',
-    padding: 16,
-  },
-  summaryLabel: {
-    color: '#6b7280',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  summaryValue: {
-    color: '#172033',
-    fontSize: 26,
-    fontWeight: '800',
-    marginTop: 10,
-  },
-  postCard: {
-    borderRadius: 24,
-    backgroundColor: '#fffaf3',
-    padding: 18,
-    gap: 12,
-    shadowColor: '#6b4f2b',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 2,
-  },
-  postHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  avatarCircle: {
-    width: 44,
-    height: 44,
+  card: {
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
     borderRadius: 22,
+    padding: 18,
+    marginBottom: 16,
+  },
+  cardTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  avatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.24)',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#fed7aa',
   },
   avatarText: {
-    color: '#9a3412',
-    fontWeight: '800',
-    fontSize: 16,
+    color: 'white',
+    fontWeight: '700',
   },
-  postHeaderText: {
-    flex: 1,
+  meta: {
     marginLeft: 12,
   },
-  postAuthorName: {
-    color: '#172033',
-    fontWeight: '800',
+  author: {
+    color: 'white',
     fontSize: 15,
+    fontWeight: '600',
   },
-  postTimestamp: {
-    color: '#6b7280',
+  time: {
+    color: 'rgba(255, 255, 255, 0.7)',
     fontSize: 12,
-    marginTop: 4,
+    marginTop: 2,
   },
-  scopeBadge: {
+  cardTitle: {
+    color: 'white',
+    fontSize: 18,
+    fontWeight: '700',
+    marginBottom: 8,
+  },
+  cardSummary: {
+    color: 'rgba(255, 255, 255, 0.86)',
+    fontSize: 14,
+    lineHeight: 21,
+  },
+  imageBlock: {
+    marginTop: 14,
+    position: 'relative',
+  },
+  imagePreview: {
+    width: '100%',
+    height: 188,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255, 255, 255, 0.09)',
+  },
+  imageCountBadge: {
+    position: 'absolute',
+    right: 12,
+    bottom: 12,
     borderRadius: 999,
-    backgroundColor: '#eff6ff',
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
     paddingHorizontal: 10,
     paddingVertical: 6,
   },
-  scopeBadgeText: {
-    color: '#1d4ed8',
+  imageCountText: {
+    color: 'white',
     fontSize: 12,
     fontWeight: '700',
   },
-  postTitle: {
-    color: '#172033',
-    fontSize: 18,
-    fontWeight: '800',
-  },
-  postExcerpt: {
-    color: '#4b5563',
-    lineHeight: 22,
-  },
   statsRow: {
     flexDirection: 'row',
-    gap: 10,
-    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    marginTop: 16,
   },
-  statPill: {
-    borderRadius: 16,
-    backgroundColor: '#f1ece4',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    minWidth: 72,
-  },
-  statValue: {
-    color: '#172033',
-    fontWeight: '800',
-    fontSize: 16,
-  },
-  statLabel: {
-    color: '#6b7280',
-    fontSize: 12,
-    marginTop: 4,
+  statText: {
+    color: 'rgba(255, 255, 255, 0.78)',
+    fontSize: 13,
   },
 });
