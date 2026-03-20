@@ -7,7 +7,11 @@
     "ios": "react-native run-ios",
     "lint": "eslint .",
     "start": "react-native start",
-    "test": "jest"
+    "test": "jest",
+    "community:api": "node community-api/src/server.js",
+    "community:seed": "node community-api/src/seed.js",
+    "community:test:api": "node --test community-api/tests/api.test.js",
+    "community:web": "npm run dev --prefix web"
   },
   "dependencies": {
     "react": "19.2.3",

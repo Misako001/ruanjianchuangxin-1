@@ -1,0 +1,10 @@
+{
+  "name": "community-api",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "node src/server.js",
+    "seed": "node src/seed.js",
+    "test": "node --test tests/api.test.js"
+  }
+}

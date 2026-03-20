@@ -65,6 +65,8 @@ yarn-error.log
 
 # testing
 /coverage
+/community-api/data/
+/web/.next/
 
 # Yarn
 .yarn/*
