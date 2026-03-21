@@ -1,5 +1,6 @@
 import Link from 'next/link';
 
+import CommunityAutoRefresh from '../../../../components/community/CommunityAutoRefresh';
 import CommunityPostInteractionClient from '../../../../components/community/CommunityPostInteractionClient';
 import {
   formatLongDate,
@@ -115,6 +116,8 @@ export default async function CommunityPostPage({
       </div>
 
       <section className="forum-content">
+        <CommunityAutoRefresh label="帖子详情自动同步中，适合和手机端联调查看最新互动状态。" />
+
         <div className="forum-secondary-grid">
           <article className="forum-board forum-board-wide">
             <div className="forum-board-title">

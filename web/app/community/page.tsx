@@ -1,5 +1,6 @@
 import Link from 'next/link';
 
+import CommunityAutoRefresh from '../../components/community/CommunityAutoRefresh';
 import {
   formatPublishDate,
   getCommunityFeed,
@@ -96,6 +97,8 @@ export default async function CommunityPage() {
       </div>
 
       <section className="forum-content">
+        <CommunityAutoRefresh label="社区首页自动同步中，跨端发帖、点赞、评论后会定时刷新。" />
+
         <div className="forum-main-grid">
           <section className="forum-board forum-board-wide">
             <div className="forum-board-title">

@@ -1,5 +1,6 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   Image,
   ScrollView,
@@ -15,17 +16,21 @@ import ThreeDModeling from './ThreeDModeling';
 import {
   CommunityComment,
   CommunityFeedSort,
-  LocalCreatePostInput,
+  CommunityPostDetail,
+  CommunityPostSummary,
 } from './shared/community/contracts';
-import {
-  buildDemoFeedFromDetails,
-  createInitialCommunityCommentsByPostId,
-  createInitialCommunityPostDetails,
-  createLocalComment,
-  createLocalPostDetail,
-} from './shared/community/demoData';
 import CommunityHomeSection from './src/community/CommunityHomeSection';
 import CommunityPostDetailView from './src/community/CommunityPostDetailView';
+import {
+  createCommunityPost,
+  fetchCommunityComments,
+  fetchCommunityFeed,
+  fetchCommunityPostDetail,
+  setCommunityPostFavorite,
+  setCommunityPostLike,
+  submitCommunityComment,
+  uploadCommunityImage,
+} from './src/community/api';
 
 type TabKey = 'home' | 'capture' | 'ai' | 'profile';
 
@@ -35,28 +40,193 @@ export default function App() {
   const [showThreeDModeling, setShowThreeDModeling] = useState(false);
   const [communityFeedSort, setCommunityFeedSort] =
     useState<CommunityFeedSort>('recommended');
-  const [communityPostDetails, setCommunityPostDetails] = useState(() =>
-    createInitialCommunityPostDetails(),
-  );
-  const [communityCommentsByPostId, setCommunityCommentsByPostId] = useState(() =>
-    createInitialCommunityCommentsByPostId(),
-  );
+  const [communityPosts, setCommunityPosts] = useState<CommunityPostSummary[]>([]);
   const [selectedPostId, setSelectedPostId] = useState<string | null>(null);
+  const [selectedPost, setSelectedPost] = useState<CommunityPostDetail | null>(null);
+  const [selectedComments, setSelectedComments] = useState<CommunityComment[]>([]);
+  const [isCommunityLoading, setIsCommunityLoading] = useState(true);
+  const [isPostLoading, setIsPostLoading] = useState(false);
+  const [communityMessage, setCommunityMessage] = useState('');
   const [draftComment, setDraftComment] = useState('');
   const [draftPostTitle, setDraftPostTitle] = useState('');
   const [draftPostContent, setDraftPostContent] = useState('');
   const [draftPostImageAsset, setDraftPostImageAsset] = useState<Asset | null>(null);
   const [postFormMessage, setPostFormMessage] = useState('');
 
-  const communityPosts = useMemo(
-    () => buildDemoFeedFromDetails(communityPostDetails, communityFeedSort),
-    [communityFeedSort, communityPostDetails],
-  );
+  useEffect(() => {
+    let cancelled = false;
 
-  const selectedPost = selectedPostId ? communityPostDetails[selectedPostId] : null;
-  const selectedComments = selectedPostId
-    ? communityCommentsByPostId[selectedPostId] ?? []
-    : [];
+    async function loadFeed() {
+      if (!cancelled) {
+        setIsCommunityLoading(true);
+        setCommunityMessage('');
+      }
+
+      try {
+        const nextPosts = await fetchCommunityFeed(communityFeedSort);
+        if (cancelled) {
+          return;
+        }
+
+        setCommunityPosts(nextPosts);
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+
+        setCommunityMessage('社区内容同步失败，请确认 Metro 与社区 API 已连接。');
+        Alert.alert('社区同步失败', getReadableError(error));
+      } finally {
+        if (!cancelled) {
+          setIsCommunityLoading(false);
+        }
+      }
+    }
+
+    loadFeed();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [communityFeedSort]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadPostDetail() {
+      if (!selectedPostId) {
+        setSelectedPost(null);
+        setSelectedComments([]);
+        setCommunityMessage('');
+        return;
+      }
+
+      setIsPostLoading(true);
+      setCommunityMessage('');
+
+      try {
+        const [nextPost, nextComments] = await Promise.all([
+          fetchCommunityPostDetail(selectedPostId),
+          fetchCommunityComments(selectedPostId),
+        ]);
+
+        if (cancelled) {
+          return;
+        }
+
+        setSelectedPost(nextPost);
+        setSelectedComments(nextComments);
+        mergePostIntoFeed(nextPost);
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+
+        setCommunityMessage('帖子详情同步失败，请稍后重试。');
+        Alert.alert('帖子同步失败', getReadableError(error));
+      } finally {
+        if (!cancelled) {
+          setIsPostLoading(false);
+        }
+      }
+    }
+
+    loadPostDetail();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedPostId]);
+
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'test') {
+      return;
+    }
+
+    if (activeTab === 'home') {
+      if (selectedPostId) {
+        refreshSelectedPost(selectedPostId);
+      } else {
+        refreshCommunityFeed();
+      }
+    }
+  }, [activeTab, selectedPostId, communityFeedSort]);
+
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'test') {
+      return;
+    }
+
+    if (activeTab !== 'home') {
+      return;
+    }
+
+    const intervalId = setInterval(() => {
+      if (selectedPostId) {
+        refreshSelectedPost(selectedPostId);
+        return;
+      }
+
+      refreshCommunityFeed();
+    }, 5000);
+
+    return () => clearInterval(intervalId);
+  }, [activeTab, communityFeedSort, selectedPostId]);
+
+  function mergePostIntoFeed(post: CommunityPostDetail) {
+    setCommunityPosts(previous => {
+      const nextSummary: CommunityPostSummary = {
+        author: post.author,
+        id: post.id,
+        images: post.images,
+        publishedAt: post.publishedAt,
+        stats: post.stats,
+        summary: post.summary,
+        title: post.title,
+        viewerContext: post.viewerContext,
+      };
+
+      const existingIndex = previous.findIndex(item => item.id === post.id);
+      if (existingIndex === -1) {
+        return [nextSummary, ...previous];
+      }
+
+      return previous.map(item => (item.id === post.id ? nextSummary : item));
+    });
+  }
+
+  function patchFeedPost(
+    postId: string,
+    patch: (post: CommunityPostSummary) => CommunityPostSummary,
+  ) {
+    setCommunityPosts(previous =>
+      previous.map(post => (post.id === postId ? patch(post) : post)),
+    );
+  }
+
+  async function refreshCommunityFeed() {
+    try {
+      const nextPosts = await fetchCommunityFeed(communityFeedSort);
+      setCommunityPosts(nextPosts);
+    } catch {}
+  }
+
+  async function refreshSelectedPost(postId: string) {
+    try {
+      const [nextPost, nextComments] = await Promise.all([
+        fetchCommunityPostDetail(postId),
+        fetchCommunityComments(postId),
+      ]);
+
+      if (postId !== selectedPostId) {
+        return;
+      }
+
+      setSelectedPost(nextPost);
+      setSelectedComments(nextComments);
+      mergePostIntoFeed(nextPost);
+    } catch {}
+  }
 
   const renderHomeScreen = () => {
     if (selectedPostId && selectedPost) {
@@ -74,6 +244,26 @@ export default function App() {
           onToggleLike={handleToggleLike}
           post={selectedPost}
         />
+      );
+    }
+
+    if (selectedPostId && isPostLoading) {
+      return (
+        <View style={styles.detailLoadingContainer}>
+          <TouchableOpacity
+            style={styles.detailLoadingBackButton}
+            onPress={() => {
+              setSelectedPostId(null);
+              setSelectedPost(null);
+              setSelectedComments([]);
+              setDraftComment('');
+            }}
+          >
+            <Text style={styles.detailLoadingBackText}>返回首页</Text>
+          </TouchableOpacity>
+          <ActivityIndicator color="#ffffff" size="large" />
+          <Text style={styles.detailLoadingText}>正在同步帖子详情...</Text>
+        </View>
       );
     }
 
@@ -104,9 +294,27 @@ export default function App() {
         <CommunityHomeSection
           currentSort={communityFeedSort}
           onChangeSort={setCommunityFeedSort}
-          onPressPost={setSelectedPostId}
+          onPressPost={postId => {
+            setSelectedPostId(postId);
+            setSelectedPost(null);
+            setSelectedComments([]);
+            setDraftComment('');
+          }}
           posts={communityPosts}
         />
+
+        {isCommunityLoading ? (
+          <View style={styles.communityStatusCard}>
+            <ActivityIndicator color="#ffffff" />
+            <Text style={styles.communityStatusText}>正在同步社区内容...</Text>
+          </View>
+        ) : null}
+
+        {communityMessage ? (
+          <View style={styles.communityStatusCard}>
+            <Text style={styles.communityStatusText}>{communityMessage}</Text>
+          </View>
+        ) : null}
       </ScrollView>
     );
   };
@@ -271,76 +479,118 @@ export default function App() {
     </ScrollView>
   );
 
-  function handleToggleLike() {
-    if (!selectedPostId) {
+  async function handleToggleLike() {
+    if (!selectedPostId || !selectedPost) {
       return;
     }
 
-    setCommunityPostDetails(previous => {
-      const current = previous[selectedPostId];
-      if (!current) {
-        return previous;
-      }
+    const currentPost = selectedPost;
+    const nextLiked = !currentPost.viewerContext.liked;
+    const nextLikeCount = Math.max(
+      0,
+      currentPost.stats.likeCount + (nextLiked ? 1 : -1),
+    );
 
-      const nextLiked = !current.viewerContext.liked;
-      const nextLikeCount = Math.max(
-        0,
-        current.stats.likeCount + (nextLiked ? 1 : -1),
-      );
-
-      return {
-        ...previous,
-        [selectedPostId]: {
-          ...current,
-          stats: {
-            ...current.stats,
-            likeCount: nextLikeCount,
-          },
-          viewerContext: {
-            ...current.viewerContext,
-            liked: nextLiked,
-          },
-        },
-      };
+    setSelectedPost({
+      ...currentPost,
+      stats: {
+        ...currentPost.stats,
+        likeCount: nextLikeCount,
+      },
+      viewerContext: {
+        ...currentPost.viewerContext,
+        liked: nextLiked,
+      },
     });
+    patchFeedPost(selectedPostId, post => ({
+      ...post,
+      stats: {
+        ...post.stats,
+        likeCount: nextLikeCount,
+      },
+      viewerContext: {
+        ...post.viewerContext,
+        liked: nextLiked,
+      },
+    }));
+
+    try {
+      await setCommunityPostLike(selectedPostId, nextLiked);
+      await refreshSelectedPost(selectedPostId);
+    } catch (error) {
+      setSelectedPost(currentPost);
+      patchFeedPost(selectedPostId, post => ({
+        ...post,
+        stats: {
+          ...post.stats,
+          likeCount: currentPost.stats.likeCount,
+        },
+        viewerContext: {
+          ...post.viewerContext,
+          liked: currentPost.viewerContext.liked,
+        },
+      }));
+      Alert.alert('点赞失败', getReadableError(error));
+    }
   }
 
-  function handleToggleFavorite() {
-    if (!selectedPostId) {
+  async function handleToggleFavorite() {
+    if (!selectedPostId || !selectedPost) {
       return;
     }
 
-    setCommunityPostDetails(previous => {
-      const current = previous[selectedPostId];
-      if (!current) {
-        return previous;
-      }
+    const currentPost = selectedPost;
+    const nextFavorited = !currentPost.viewerContext.favorited;
+    const nextFavoriteCount = Math.max(
+      0,
+      currentPost.stats.favoriteCount + (nextFavorited ? 1 : -1),
+    );
 
-      const nextFavorited = !current.viewerContext.favorited;
-      const nextFavoriteCount = Math.max(
-        0,
-        current.stats.favoriteCount + (nextFavorited ? 1 : -1),
-      );
-
-      return {
-        ...previous,
-        [selectedPostId]: {
-          ...current,
-          stats: {
-            ...current.stats,
-            favoriteCount: nextFavoriteCount,
-          },
-          viewerContext: {
-            ...current.viewerContext,
-            favorited: nextFavorited,
-          },
-        },
-      };
+    setSelectedPost({
+      ...currentPost,
+      stats: {
+        ...currentPost.stats,
+        favoriteCount: nextFavoriteCount,
+      },
+      viewerContext: {
+        ...currentPost.viewerContext,
+        favorited: nextFavorited,
+      },
     });
+    patchFeedPost(selectedPostId, post => ({
+      ...post,
+      stats: {
+        ...post.stats,
+        favoriteCount: nextFavoriteCount,
+      },
+      viewerContext: {
+        ...post.viewerContext,
+        favorited: nextFavorited,
+      },
+    }));
+
+    try {
+      await setCommunityPostFavorite(selectedPostId, nextFavorited);
+      await refreshSelectedPost(selectedPostId);
+    } catch (error) {
+      setSelectedPost(currentPost);
+      patchFeedPost(selectedPostId, post => ({
+        ...post,
+        stats: {
+          ...post.stats,
+          favoriteCount: currentPost.stats.favoriteCount,
+        },
+        viewerContext: {
+          ...post.viewerContext,
+          favorited: currentPost.viewerContext.favorited,
+        },
+      }));
+      Alert.alert('收藏失败', getReadableError(error));
+    }
   }
 
-  function handleSubmitComment() {
-    if (!selectedPostId) {
+  async function handleSubmitComment() {
+    if (!selectedPostId || !selectedPost) {
       return;
     }
 
@@ -349,38 +599,35 @@ export default function App() {
       return;
     }
 
-    const nextComment: CommunityComment = createLocalComment({
-      content: nextContent,
-      postId: selectedPostId,
-    });
-
-    setCommunityCommentsByPostId(previous => ({
-      ...previous,
-      [selectedPostId]: [...(previous[selectedPostId] ?? []), nextComment],
-    }));
-
-    setCommunityPostDetails(previous => {
-      const current = previous[selectedPostId];
-      if (!current) {
-        return previous;
-      }
-
-      return {
-        ...previous,
-        [selectedPostId]: {
-          ...current,
-          stats: {
-            ...current.stats,
-            commentCount: current.stats.commentCount + 1,
-          },
+    try {
+      const createdComment = await submitCommunityComment(selectedPostId, nextContent);
+      setSelectedComments(previous => [...previous, createdComment]);
+      setSelectedPost(previous =>
+        previous
+          ? {
+              ...previous,
+              stats: {
+                ...previous.stats,
+                commentCount: previous.stats.commentCount + 1,
+              },
+            }
+          : previous,
+      );
+      patchFeedPost(selectedPostId, post => ({
+        ...post,
+        stats: {
+          ...post.stats,
+          commentCount: post.stats.commentCount + 1,
         },
-      };
-    });
-
-    setDraftComment('');
+      }));
+      setDraftComment('');
+      await refreshSelectedPost(selectedPostId);
+    } catch (error) {
+      Alert.alert('评论失败', getReadableError(error));
+    }
   }
 
-  function handleSubmitPost() {
+  async function handleSubmitPost() {
     const nextTitle = draftPostTitle.trim();
     const nextContent = draftPostContent.trim();
     if (!nextTitle || !nextContent) {
@@ -388,37 +635,46 @@ export default function App() {
       return;
     }
 
-    const postInput: LocalCreatePostInput = {
-      content: nextContent,
-      imageUrl: draftPostImageAsset?.uri,
-      title: nextTitle,
-    };
+    try {
+      setPostFormMessage('正在同步帖子内容...');
 
-    const nextPost = createLocalPostDetail(postInput);
+      const imageUrls: string[] = [];
+      if (draftPostImageAsset) {
+        const uploadedImage = await uploadCommunityImage(draftPostImageAsset);
+        if (!uploadedImage?.url) {
+          throw new Error('图片上传失败，请重新选择后重试。');
+        }
 
-    setCommunityPostDetails(previous => ({
-      [nextPost.id]: nextPost,
-      ...previous,
-    }));
+        imageUrls.push(uploadedImage.url);
+      }
 
-    setCommunityCommentsByPostId(previous => ({
-      ...previous,
-      [nextPost.id]: [],
-    }));
+      const createdPost = await createCommunityPost({
+        content: nextContent,
+        imageUrls,
+        title: nextTitle,
+      });
 
-    setDraftPostTitle('');
-    setDraftPostContent('');
-    setDraftPostImageAsset(null);
-    setPostFormMessage('帖子已发布，正在打开详情预览。');
-    setCommunityFeedSort('latest');
-    setActiveTab('home');
-    setSelectedPostId(nextPost.id);
-    setDraftComment('');
+      setDraftPostTitle('');
+      setDraftPostContent('');
+      setDraftPostImageAsset(null);
+      setPostFormMessage('帖子已发布，正在同步到首页与详情...');
+      setCommunityFeedSort('latest');
+      setSelectedPost(createdPost);
+      setSelectedComments([]);
+      setSelectedPostId(createdPost.id);
+      setDraftComment('');
+      setActiveTab('home');
+      mergePostIntoFeed(createdPost);
+      await refreshCommunityFeed();
+    } catch (error) {
+      setPostFormMessage(getReadableError(error));
+    }
   }
 
   async function handlePickPostImage() {
     try {
       const result = await launchImageLibrary({
+        includeBase64: true,
         mediaType: 'photo',
         quality: 0.8,
         selectionLimit: 1,
@@ -533,6 +789,14 @@ export default function App() {
   );
 }
 
+function getReadableError(error: unknown) {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message;
+  }
+
+  return '请确认 Metro、社区 API 和 USB 端口映射都已连接后再试。';
+}
+
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
@@ -567,6 +831,31 @@ const styles = StyleSheet.create({
   },
   profileScrollContent: {
     paddingBottom: 40,
+  },
+  detailLoadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 28,
+  },
+  detailLoadingBackButton: {
+    position: 'absolute',
+    left: 20,
+    top: 44,
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+    borderRadius: 999,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  detailLoadingBackText: {
+    color: 'white',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  detailLoadingText: {
+    marginTop: 14,
+    color: 'rgba(255, 255, 255, 0.82)',
+    fontSize: 14,
   },
   content: {
     paddingHorizontal: 30,
@@ -753,6 +1042,24 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 20,
     marginBottom: 14,
+  },
+  communityStatusCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginHorizontal: 24,
+    marginTop: 4,
+    marginBottom: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+  },
+  communityStatusText: {
+    color: 'rgba(255, 255, 255, 0.82)',
+    fontSize: 13,
+    marginLeft: 10,
+    textAlign: 'center',
   },
   selectedImageCard: {
     backgroundColor: 'rgba(255, 255, 255, 0.12)',

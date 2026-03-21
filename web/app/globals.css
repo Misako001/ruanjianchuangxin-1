@@ -223,6 +223,31 @@ textarea {
   padding: 10px 0 72px;
 }
 
+.forum-sync-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 18px;
+  padding: 12px 16px;
+  border: 1px solid #ead8ce;
+  background: #fffaf7;
+  color: #8f2c25;
+  font-size: 14px;
+}
+
+.forum-sync-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #33b36b;
+  box-shadow: 0 0 0 4px rgba(51, 179, 107, 0.15);
+}
+
+.forum-sync-time {
+  color: #8a8a8a;
+}
+
 .forum-main-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.95fr) minmax(280px, 0.75fr);
