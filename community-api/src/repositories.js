@@ -149,10 +149,15 @@ function getPostDetail(postId, viewerId) {
   };
 }
 
-function createPost({ authorId, title, content, imageUrls = [] }) {
+function createPost({
+  authorId,
+  title,
+  content,
+  imageUrls = [],
+  postId = createId('post'),
+  publishedAt = nowIso(),
+}) {
   const db = getDb();
-  const postId = createId('post');
-  const publishedAt = nowIso();
 
   const transaction = db.transaction(() => {
     db.prepare(
@@ -267,9 +272,10 @@ function createComment({
   content,
   parentCommentId = null,
   replyToUserId = null,
+  commentId = createId('comment'),
+  publishedAt = nowIso(),
 }) {
   const db = getDb();
-  const commentId = createId('comment');
 
   db.prepare(
     `
@@ -277,7 +283,7 @@ function createComment({
       id, post_id, author_id, parent_comment_id, reply_to_user_id, content, published_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?)
   `,
-  ).run(commentId, postId, authorId, parentCommentId, replyToUserId, content, nowIso());
+  ).run(commentId, postId, authorId, parentCommentId, replyToUserId, content, publishedAt);
 
   db.prepare(
     'UPDATE community_posts SET comment_count = comment_count + 1 WHERE id = ?',
