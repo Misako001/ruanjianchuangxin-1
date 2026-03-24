@@ -4,12 +4,15 @@
   "version": "0.1.0",
   "scripts": {
     "dev": "node src/server.js",
+    "mysql:down": "docker compose -f ../docker-compose.community.yml down",
+    "mysql:up": "docker compose -f ../docker-compose.community.yml up -d mysql",
     "seed": "node src/seed.js",
     "test": "node --test tests/api.test.js"
   },
   "dependencies": {
-    "better-sqlite3": "^12.8.0",
+    "dotenv": "^17.3.1",
     "express": "^5.2.1",
+    "mysql2": "^3.20.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {

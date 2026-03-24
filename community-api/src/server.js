@@ -1,7 +1,17 @@
-const { app } = require('./app');
 const { port } = require('./config');
+const { createApp } = require('./app');
 
-app.listen(port, () => {
+async function startServer() {
+  const app = await createApp();
+
+  app.listen(port, () => {
+    // eslint-disable-next-line no-console
+    console.log(`Community API listening on http://localhost:${port}`);
+  });
+}
+
+startServer().catch(error => {
   // eslint-disable-next-line no-console
-  console.log(`Community API listening on http://localhost:${port}`);
+  console.error(error);
+  process.exit(1);
 });

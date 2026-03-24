@@ -224,6 +224,7 @@ function mapFeedPost(post: ApiFeedPost): CommunityPostSummary {
     summary: post.excerpt,
     title: post.title,
     viewerContext: {
+      canDelete: false,
       favorited: false,
       liked: false,
     },
@@ -237,6 +238,7 @@ function mapPostDetail(post: ApiPostDetail): CommunityPostDetail {
     ...summaryPost,
     content: post.content,
     viewerContext: {
+      canDelete: Boolean(post.viewerContext?.canDelete),
       favorited: Boolean(post.viewerContext?.favorited),
       liked: Boolean(post.viewerContext?.liked),
     },

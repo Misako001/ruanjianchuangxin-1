@@ -18,6 +18,7 @@ type CommunityPostDetailViewProps = {
   comments: CommunityComment[];
   draftComment: string;
   onChangeDraftComment: (text: string) => void;
+  onDeletePost: () => void;
   onToggleLike: () => void;
   onToggleFavorite: () => void;
   onSubmitComment: () => void;
@@ -30,6 +31,7 @@ export default function CommunityPostDetailView({
   draftComment,
   onBack,
   onChangeDraftComment,
+  onDeletePost,
   onSubmitComment,
   onToggleFavorite,
   onToggleLike,
@@ -60,6 +62,16 @@ export default function CommunityPostDetailView({
 
         <Text style={styles.title}>{post.title}</Text>
         <Text style={styles.content}>{post.content}</Text>
+
+        {post.viewerContext.canDelete ? (
+          <Pressable
+            style={styles.deleteButton}
+            testID="community-post-detail-delete"
+            onPress={onDeletePost}
+          >
+            <Text style={styles.deleteButtonText}>删除帖子</Text>
+          </Pressable>
+        ) : null}
 
         {post.images.length > 0 ? (
           <View style={styles.imagesBlock}>
@@ -225,6 +237,21 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 24,
     marginTop: 14,
+  },
+  deleteButton: {
+    alignSelf: 'flex-start',
+    marginTop: 16,
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(255, 94, 94, 0.18)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 138, 138, 0.28)',
+  },
+  deleteButtonText: {
+    color: '#ffe1e1',
+    fontSize: 13,
+    fontWeight: '700',
   },
   imagesBlock: {
     marginTop: 18,

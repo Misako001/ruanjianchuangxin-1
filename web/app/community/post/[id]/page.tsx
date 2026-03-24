@@ -172,6 +172,10 @@ export default async function CommunityPostPage({
                 <strong>交互区样式已改为更接近视频社区的按钮布局</strong>
                 <p>保留论坛主结构，同时把常用互动操作集中到正文下方，减少纯数字展示造成的误判。</p>
               </div>
+              <div className="forum-side-item">
+                <strong>帖子删除权限只开放给发帖作者</strong>
+                <p>如果当前查看人就是作者，正文下方会显示删除入口；删除成功后会返回社区首页。</p>
+              </div>
             </div>
           </aside>
         </div>

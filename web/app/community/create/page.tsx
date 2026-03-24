@@ -1,5 +1,7 @@
 import Link from 'next/link';
 
+import CommunityCreatePostClient from '../../../components/community/CommunityCreatePostClient';
+
 export default function CommunityCreatePage() {
   return (
     <main className="forum-page">
@@ -83,38 +85,7 @@ export default function CommunityCreatePage() {
               <h2>发布帖子</h2>
             </div>
 
-            <div className="forum-form-wrap">
-              <p className="forum-board-intro">
-                在这里发布一条新的社区帖子。当前先保留为前端占位表单，后续会直接接入统一
-                community-api。
-              </p>
-
-              <form className="forum-publish-form">
-                <label htmlFor="title">标题</label>
-                <input id="title" placeholder="例如：我如何把夜景素材调成更有呼吸感的冷暖结构" />
-
-                <label htmlFor="content">正文</label>
-                <textarea
-                  id="content"
-                  placeholder="写下你的创作思路、遇到的问题、过程截图说明，或你想邀请社区一起讨论的内容"
-                />
-
-                <label htmlFor="cover">图片占位</label>
-                <input
-                  id="cover"
-                  placeholder="后续这里会接图片上传，目前先保留为 Web 端占位输入区"
-                />
-
-                <div className="forum-button-row">
-                  <button className="forum-action-button forum-action-primary" type="button">
-                    发布演示帖子
-                  </button>
-                  <Link className="forum-action-button" href="/community">
-                    返回社区首页
-                  </Link>
-                </div>
-              </form>
-            </div>
+            <CommunityCreatePostClient />
           </section>
 
           <aside className="forum-board">
@@ -131,8 +102,8 @@ export default function CommunityCreatePage() {
                 <p>比起只给结果图，更建议写出调整逻辑、尝试和结论。</p>
               </div>
               <div className="forum-side-item">
-                <strong>给图片留空间</strong>
-                <p>这一栏后续会接对象存储和多图上传，不需要重做页面结构。</p>
+                <strong>图片会直接上传到社区后端</strong>
+                <p>上传成功后，Web 和移动端都会看到同一组帖子图片与内容。</p>
               </div>
             </div>
           </aside>

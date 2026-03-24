@@ -17,6 +17,7 @@ export type CommunityImageAsset = {
 export type CommunityReactionState = {
   liked: boolean;
   favorited: boolean;
+  canDelete?: boolean;
 };
 
 export type ReactionState = CommunityReactionState;

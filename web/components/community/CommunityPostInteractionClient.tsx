@@ -1,5 +1,6 @@
 'use client';
 
+import { useRouter } from 'next/navigation';
 import { useRef, useState } from 'react';
 
 import {
@@ -30,10 +31,12 @@ export default function CommunityPostInteractionClient({
   initialPost,
   postId,
 }: CommunityPostInteractionClientProps) {
+  const router = useRouter();
   const [post, setPost] = useState(initialPost);
   const [comments, setComments] = useState(initialComments);
   const [draftComment, setDraftComment] = useState('');
   const [isSubmittingComment, setIsSubmittingComment] = useState(false);
+  const [isDeletingPost, setIsDeletingPost] = useState(false);
   const [feedbackMessage, setFeedbackMessage] = useState('');
   const commentInputRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -200,11 +203,63 @@ export default function CommunityPostInteractionClient({
     }
   }
 
+  async function handleDeletePost() {
+    if (!post.viewerContext.canDelete || isDeletingPost) {
+      return;
+    }
+
+    // eslint-disable-next-line no-alert
+    const confirmed = window.confirm('确认删除这条帖子吗？删除后将无法恢复。');
+    if (!confirmed) {
+      return;
+    }
+
+    setIsDeletingPost(true);
+    setFeedbackMessage('');
+
+    try {
+      const response = await fetch(`/api/community/posts/${postId}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { message?: string } | null;
+        throw new Error(payload?.message || '删除帖子失败，请稍后重试。');
+      }
+
+      router.push('/community');
+      router.refresh();
+    } catch (error) {
+      setFeedbackMessage(
+        error instanceof Error && error.message ? error.message : '删除帖子失败，请稍后重试。',
+      );
+      setIsDeletingPost(false);
+    }
+  }
+
   return (
     <>
       <div className="forum-post-body">
         <p>{post.content}</p>
       </div>
+
+      {post.viewerContext.canDelete ? (
+        <div className="forum-post-admin-bar">
+          <button
+            className="forum-danger-button"
+            type="button"
+            disabled={isDeletingPost}
+            onClick={() => {
+              handleDeletePost().catch(() => {
+                setFeedbackMessage('删除帖子失败，请稍后重试。');
+                setIsDeletingPost(false);
+              });
+            }}
+          >
+            {isDeletingPost ? '删除中' : '删除帖子'}
+          </button>
+        </div>
+      ) : null}
 
       <div className="bili-action-bar">
         {actionButtons.map(button => (

@@ -1,8 +1,14 @@
-const { getDb } = require('./db');
-const { buildExcerpt, buildCursorFromIso, createId, nowIso, parseCursor } = require('./helpers');
+const { getDb, withTransaction } = require('./db');
+const {
+  buildExcerpt,
+  buildCursorFromIso,
+  createId,
+  nowIso,
+  parseCursor,
+} = require('./helpers');
 
-function listFeed({ sort = 'recommended', cursor }) {
-  const db = getDb();
+async function listFeed({ sort = 'recommended', cursor }) {
+  const db = await getDb();
   const parsedCursor = parseCursor(cursor);
 
   let orderBy = 'p.published_at DESC';
@@ -11,9 +17,8 @@ function listFeed({ sort = 'recommended', cursor }) {
       '(p.like_count * 1.0 + p.comment_count * 2.0 + p.favorite_count * 1.5) DESC, p.published_at DESC';
   }
 
-  const items = db
-    .prepare(
-      `
+  const [items] = await db.execute(
+    `
       SELECT
         p.id,
         p.title,
@@ -30,15 +35,18 @@ function listFeed({ sort = 'recommended', cursor }) {
       FROM community_posts p
       JOIN community_users u ON u.id = p.author_id
       WHERE p.deleted_at IS NULL
-        AND (@cursor IS NULL OR p.published_at < @cursor)
+        AND (? IS NULL OR p.published_at < ?)
       ORDER BY ${orderBy}
       LIMIT 21
     `,
-    )
-    .all({ cursor: parsedCursor || null });
+    [parsedCursor, parsedCursor],
+  );
 
   const paged = items.slice(0, 20);
-  const imagesByPostId = listImagesForPosts(paged.map(item => item.id));
+  const imagesByPostId = await listImagesForPosts(
+    paged.map(item => item.id),
+    db,
+  );
 
   return {
     items: paged.map(item => mapFeedPost(item, imagesByPostId[item.id] || [])),
@@ -46,37 +54,37 @@ function listFeed({ sort = 'recommended', cursor }) {
   };
 }
 
-function listImagesForPosts(postIds) {
+async function listImagesForPosts(postIds, executor) {
   if (!postIds.length) {
     return {};
   }
 
-  const db = getDb();
-  const rows = db
-    .prepare(
-      `
+  const db = executor || (await getDb());
+  const placeholders = postIds.map(() => '?').join(', ');
+  const [rows] = await db.execute(
+    `
       SELECT post_id, image_url
       FROM community_post_images
-      WHERE post_id IN (${postIds.map(() => '?').join(',')})
+      WHERE post_id IN (${placeholders})
       ORDER BY sort_order ASC
     `,
-    )
-    .all(...postIds);
+    postIds,
+  );
 
   return rows.reduce((accumulator, row) => {
     if (!accumulator[row.post_id]) {
       accumulator[row.post_id] = [];
     }
+
     accumulator[row.post_id].push(row.image_url);
     return accumulator;
   }, {});
 }
 
-function getPostDetail(postId, viewerId) {
-  const db = getDb();
-  const row = db
-    .prepare(
-      `
+async function getPostDetail(postId, viewerId) {
+  const db = await getDb();
+  const [rows] = await db.execute(
+    `
       SELECT
         p.id,
         p.title,
@@ -94,62 +102,72 @@ function getPostDetail(postId, viewerId) {
       FROM community_posts p
       JOIN community_users u ON u.id = p.author_id
       WHERE p.id = ? AND p.deleted_at IS NULL
+      LIMIT 1
     `,
-    )
-    .get(postId);
+    [postId],
+  );
 
-  if (!row) {
+  if (rows.length === 0) {
     return null;
   }
 
-  const imageUrls = listImagesForPosts([postId])[postId] || [];
-  const liked = viewerId
-    ? Boolean(
-        db
-          .prepare(
-            'SELECT 1 FROM community_post_likes WHERE post_id = ? AND user_id = ?',
-          )
-          .get(postId, viewerId),
-      )
-    : false;
-  const favorited = viewerId
-    ? Boolean(
-        db
-          .prepare(
-            'SELECT 1 FROM community_post_favorites WHERE post_id = ? AND user_id = ?',
-          )
-          .get(postId, viewerId),
-      )
-    : false;
+  const row = rows[0];
+  const imageUrls = (await listImagesForPosts([postId], db))[postId] || [];
+
+  let liked = false;
+  let favorited = false;
+
+  if (viewerId) {
+    const [[likedRow]] = await db.execute(
+      `
+        SELECT 1
+        FROM community_post_likes
+        WHERE post_id = ? AND user_id = ?
+        LIMIT 1
+      `,
+      [postId, viewerId],
+    );
+    const [[favoritedRow]] = await db.execute(
+      `
+        SELECT 1
+        FROM community_post_favorites
+        WHERE post_id = ? AND user_id = ?
+        LIMIT 1
+      `,
+      [postId, viewerId],
+    );
+    liked = Boolean(likedRow);
+    favorited = Boolean(favoritedRow);
+  }
 
   return {
-    id: row.id,
-    title: row.title,
+    author: {
+      avatarUrl: row.avatar_url,
+      displayName: row.display_name,
+      externalAccountId: row.external_account_id,
+      handle: row.handle,
+      id: row.author_id,
+    },
     content: row.content,
     excerpt: row.excerpt,
-    publishedAt: row.published_at,
-    author: {
-      id: row.author_id,
-      externalAccountId: row.external_account_id,
-      displayName: row.display_name,
-      handle: row.handle,
-      avatarUrl: row.avatar_url,
-    },
+    id: row.id,
     imagePreviewUrls: imageUrls,
+    publishedAt: row.published_at,
     stats: {
-      likeCount: row.like_count,
       commentCount: row.comment_count,
       favoriteCount: row.favorite_count,
+      likeCount: row.like_count,
     },
+    title: row.title,
     viewerContext: {
-      liked,
-      favorited,
       canDelete: viewerId === row.author_id,
+      favorited,
+      liked,
     },
   };
 }
 
-function createPost({
+async function createPost({
   authorId,
   title,
   content,
@@ -157,56 +175,63 @@ function createPost({
   postId = createId('post'),
   publishedAt = nowIso(),
 }) {
-  const db = getDb();
-
-  const transaction = db.transaction(() => {
-    db.prepare(
+  await withTransaction(async connection => {
+    await connection.execute(
       `
-      INSERT INTO community_posts (
-        id, author_id, title, content, excerpt, published_at
-      ) VALUES (?, ?, ?, ?, ?, ?)
-    `,
-    ).run(postId, authorId, title, content, buildExcerpt(content), publishedAt);
-
-    imageUrls.forEach((imageUrl, index) => {
-      db.prepare(
-        `
-        INSERT INTO community_post_images (
-          id, post_id, image_url, sort_order
-        ) VALUES (?, ?, ?, ?)
+        INSERT INTO community_posts (
+          id, author_id, title, content, excerpt, published_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
       `,
-      ).run(createId('image'), postId, imageUrl, index);
-    });
+      [postId, authorId, title, content, buildExcerpt(content), publishedAt],
+    );
+
+    for (const [index, imageUrl] of imageUrls.entries()) {
+      await connection.execute(
+        `
+          INSERT INTO community_post_images (
+            id, post_id, image_url, sort_order
+          ) VALUES (?, ?, ?, ?)
+        `,
+        [createId('image'), postId, imageUrl, index],
+      );
+    }
   });
 
-  transaction();
   return getPostDetail(postId, authorId);
 }
 
-function softDeletePost({ postId, userId }) {
-  const db = getDb();
-  const post = db
-    .prepare('SELECT author_id FROM community_posts WHERE id = ? AND deleted_at IS NULL')
-    .get(postId);
+async function softDeletePost({ postId, userId }) {
+  const db = await getDb();
+  const [rows] = await db.execute(
+    `
+      SELECT author_id
+      FROM community_posts
+      WHERE id = ? AND deleted_at IS NULL
+      LIMIT 1
+    `,
+    [postId],
+  );
 
-  if (!post) {
+  if (rows.length === 0) {
     return { status: 'missing' };
   }
 
-  if (post.author_id !== userId) {
+  if (rows[0].author_id !== userId) {
     return { status: 'forbidden' };
   }
 
-  db.prepare('UPDATE community_posts SET deleted_at = ? WHERE id = ?').run(nowIso(), postId);
+  await db.execute(
+    'UPDATE community_posts SET deleted_at = ? WHERE id = ?',
+    [nowIso(), postId],
+  );
   return { status: 'deleted' };
 }
 
-function listComments(postId, cursor) {
-  const db = getDb();
+async function listComments(postId, cursor) {
+  const db = await getDb();
   const parsedCursor = parseCursor(cursor);
-  const rows = db
-    .prepare(
-      `
+  const [rows] = await db.execute(
+    `
       SELECT
         c.id,
         c.post_id,
@@ -234,31 +259,31 @@ function listComments(postId, cursor) {
       ORDER BY c.published_at ASC
       LIMIT 31
     `,
-    )
-    .all(postId, parsedCursor || null, parsedCursor || null);
+    [postId, parsedCursor, parsedCursor],
+  );
 
   return {
     items: rows.slice(0, 30).map(row => ({
-      id: row.id,
-      postId: row.post_id,
+      author: {
+        avatarUrl: row.author_avatar_url,
+        displayName: row.author_display_name,
+        externalAccountId: row.author_external_account_id,
+        handle: row.author_handle,
+        id: row.author_id,
+      },
       content: row.content,
-      publishedAt: row.published_at,
+      id: row.id,
       likeCount: row.like_count,
       parentCommentId: row.parent_comment_id,
-      author: {
-        id: row.author_id,
-        externalAccountId: row.author_external_account_id,
-        displayName: row.author_display_name,
-        handle: row.author_handle,
-        avatarUrl: row.author_avatar_url,
-      },
+      postId: row.post_id,
+      publishedAt: row.published_at,
       replyToUser: row.reply_user_id
         ? {
-            id: row.reply_user_id,
-            externalAccountId: row.reply_external_account_id,
-            displayName: row.reply_display_name,
-            handle: row.reply_handle,
             avatarUrl: row.reply_avatar_url,
+            displayName: row.reply_display_name,
+            externalAccountId: row.reply_external_account_id,
+            handle: row.reply_handle,
+            id: row.reply_user_id,
           }
         : null,
     })),
@@ -266,7 +291,7 @@ function listComments(postId, cursor) {
   };
 }
 
-function createComment({
+async function createComment({
   postId,
   authorId,
   content,
@@ -275,52 +300,70 @@ function createComment({
   commentId = createId('comment'),
   publishedAt = nowIso(),
 }) {
-  const db = getDb();
+  await withTransaction(async connection => {
+    await connection.execute(
+      `
+        INSERT INTO community_comments (
+          id, post_id, author_id, parent_comment_id, reply_to_user_id, content, published_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `,
+      [commentId, postId, authorId, parentCommentId, replyToUserId, content, publishedAt],
+    );
 
-  db.prepare(
-    `
-    INSERT INTO community_comments (
-      id, post_id, author_id, parent_comment_id, reply_to_user_id, content, published_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-  `,
-  ).run(commentId, postId, authorId, parentCommentId, replyToUserId, content, publishedAt);
+    await connection.execute(
+      `
+        UPDATE community_posts
+        SET comment_count = comment_count + 1
+        WHERE id = ?
+      `,
+      [postId],
+    );
+  });
 
-  db.prepare(
-    'UPDATE community_posts SET comment_count = comment_count + 1 WHERE id = ?',
-  ).run(postId);
-
-  return listComments(postId).items.slice(-1)[0];
+  const result = await listComments(postId);
+  return result.items[result.items.length - 1];
 }
 
-function softDeleteComment({ commentId, userId }) {
-  const db = getDb();
-  const comment = db
-    .prepare(
-      'SELECT author_id, post_id FROM community_comments WHERE id = ? AND deleted_at IS NULL',
-    )
-    .get(commentId);
+async function softDeleteComment({ commentId, userId }) {
+  const db = await getDb();
+  const [rows] = await db.execute(
+    `
+      SELECT author_id, post_id
+      FROM community_comments
+      WHERE id = ? AND deleted_at IS NULL
+      LIMIT 1
+    `,
+    [commentId],
+  );
 
-  if (!comment) {
+  if (rows.length === 0) {
     return { status: 'missing' };
   }
 
-  if (comment.author_id !== userId) {
+  if (rows[0].author_id !== userId) {
     return { status: 'forbidden' };
   }
 
-  db.prepare('UPDATE community_comments SET deleted_at = ? WHERE id = ?').run(
-    nowIso(),
-    commentId,
-  );
-  db.prepare(
-    'UPDATE community_posts SET comment_count = MAX(comment_count - 1, 0) WHERE id = ?',
-  ).run(comment.post_id);
+  await withTransaction(async connection => {
+    await connection.execute(
+      'UPDATE community_comments SET deleted_at = ? WHERE id = ?',
+      [nowIso(), commentId],
+    );
+    await connection.execute(
+      `
+        UPDATE community_posts
+        SET comment_count = GREATEST(comment_count - 1, 0)
+        WHERE id = ?
+      `,
+      [rows[0].post_id],
+    );
+  });
 
   return { status: 'deleted' };
 }
 
-function toggleReaction({ entityType, targetId, userId, reactionType, enabled }) {
-  const db = getDb();
+async function toggleReaction({ entityType, targetId, userId, reactionType, enabled }) {
+  const db = await getDb();
   const table =
     entityType === 'post'
       ? reactionType === 'favorite'
@@ -331,35 +374,41 @@ function toggleReaction({ entityType, targetId, userId, reactionType, enabled })
   const aggregateTable = entityType === 'post' ? 'community_posts' : 'community_comments';
   const aggregateColumn = reactionType === 'favorite' ? 'favorite_count' : 'like_count';
 
-  if (enabled) {
-    db.prepare(
-      `INSERT OR IGNORE INTO ${table} (${targetColumn}, user_id, created_at) VALUES (?, ?, ?)`,
-    ).run(targetId, userId, nowIso());
-  } else {
-    db.prepare(`DELETE FROM ${table} WHERE ${targetColumn} = ? AND user_id = ?`).run(
-      targetId,
-      userId,
-    );
-  }
+  await withTransaction(async connection => {
+    if (enabled) {
+      await connection.execute(
+        `
+          INSERT IGNORE INTO ${table} (${targetColumn}, user_id, created_at)
+          VALUES (?, ?, ?)
+        `,
+        [targetId, userId, nowIso()],
+      );
+    } else {
+      await connection.execute(
+        `DELETE FROM ${table} WHERE ${targetColumn} = ? AND user_id = ?`,
+        [targetId, userId],
+      );
+    }
 
-  db.prepare(
-    `
-    UPDATE ${aggregateTable}
-    SET ${aggregateColumn} = (
-      SELECT COUNT(*)
-      FROM ${table}
-      WHERE ${targetColumn} = ?
-    )
-    WHERE id = ?
-  `,
-  ).run(targetId, targetId);
+    await connection.execute(
+      `
+        UPDATE ${aggregateTable}
+        SET ${aggregateColumn} = (
+          SELECT COUNT(*)
+          FROM ${table}
+          WHERE ${targetColumn} = ?
+        )
+        WHERE id = ?
+      `,
+      [targetId, targetId],
+    );
+  });
 }
 
-function getProfileById(profileId) {
-  const db = getDb();
-  const profile = db
-    .prepare(
-      `
+async function getProfileById(profileId) {
+  const db = await getDb();
+  const [rows] = await db.execute(
+    `
       SELECT
         u.id,
         u.external_account_id,
@@ -368,51 +417,55 @@ function getProfileById(profileId) {
         u.avatar_url,
         u.bio,
         (
-          SELECT COUNT(*) FROM community_posts p
+          SELECT COUNT(*)
+          FROM community_posts p
           WHERE p.author_id = u.id AND p.deleted_at IS NULL
         ) AS post_count,
         (
-          SELECT COUNT(*) FROM community_comments c
+          SELECT COUNT(*)
+          FROM community_comments c
           WHERE c.author_id = u.id AND c.deleted_at IS NULL
         ) AS comment_count,
         (
-          SELECT COUNT(*) FROM community_post_favorites f
+          SELECT COUNT(*)
+          FROM community_post_favorites f
           WHERE f.user_id = u.id
         ) AS favorite_count
       FROM community_users u
       WHERE u.id = ?
+      LIMIT 1
     `,
-    )
-    .get(profileId);
+    [profileId],
+  );
 
-  if (!profile) {
+  if (rows.length === 0) {
     return null;
   }
 
+  const profile = rows[0];
   return {
-    id: profile.id,
-    externalAccountId: profile.external_account_id,
-    displayName: profile.display_name,
-    handle: profile.handle,
     avatarUrl: profile.avatar_url,
     bio: profile.bio,
+    displayName: profile.display_name,
+    externalAccountId: profile.external_account_id,
+    handle: profile.handle,
+    id: profile.id,
     stats: {
-      postCount: profile.post_count,
       commentCount: profile.comment_count,
       favoriteCount: profile.favorite_count,
+      postCount: profile.post_count,
     },
   };
 }
 
-function getCurrentUserSummary(userId) {
+async function getCurrentUserSummary(userId) {
   return getProfileById(userId);
 }
 
-function listMyPosts(userId) {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      `
+async function listMyPosts(userId) {
+  const db = await getDb();
+  const [rows] = await db.execute(
+    `
       SELECT
         p.id,
         p.title,
@@ -431,39 +484,42 @@ function listMyPosts(userId) {
       WHERE p.author_id = ? AND p.deleted_at IS NULL
       ORDER BY p.published_at DESC
     `,
-    )
-    .all(userId);
+    [userId],
+  );
 
-  const imagesByPostId = listImagesForPosts(rows.map(row => row.id));
+  const imagesByPostId = await listImagesForPosts(
+    rows.map(row => row.id),
+    db,
+  );
+
   return rows.map(row => mapFeedPost(row, imagesByPostId[row.id] || []));
 }
 
-function listMyComments(userId) {
-  const db = getDb();
-  return db
-    .prepare(
-      `
+async function listMyComments(userId) {
+  const db = await getDb();
+  const [rows] = await db.execute(
+    `
       SELECT id, post_id, content, published_at, like_count
       FROM community_comments
       WHERE author_id = ? AND deleted_at IS NULL
       ORDER BY published_at DESC
     `,
-    )
-    .all(userId)
-    .map(row => ({
-      id: row.id,
-      postId: row.post_id,
-      content: row.content,
-      publishedAt: row.published_at,
-      likeCount: row.like_count,
-    }));
+    [userId],
+  );
+
+  return rows.map(row => ({
+    content: row.content,
+    id: row.id,
+    likeCount: row.like_count,
+    postId: row.post_id,
+    publishedAt: row.published_at,
+  }));
 }
 
-function listMyFavorites(userId) {
-  const db = getDb();
-  const rows = db
-    .prepare(
-      `
+async function listMyFavorites(userId) {
+  const db = await getDb();
+  const [rows] = await db.execute(
+    `
       SELECT
         p.id,
         p.title,
@@ -483,38 +539,64 @@ function listMyFavorites(userId) {
       WHERE f.user_id = ? AND p.deleted_at IS NULL
       ORDER BY f.created_at DESC
     `,
-    )
-    .all(userId);
+    [userId],
+  );
 
-  const imagesByPostId = listImagesForPosts(rows.map(row => row.id));
+  const imagesByPostId = await listImagesForPosts(
+    rows.map(row => row.id),
+    db,
+  );
+
   return rows.map(row => mapFeedPost(row, imagesByPostId[row.id] || []));
+}
+
+async function createUploadRecord({
+  fileId,
+  userId,
+  filename,
+  mimeType,
+  storagePath,
+  publicUrl,
+  width,
+  height,
+}) {
+  const db = await getDb();
+  await db.execute(
+    `
+      INSERT INTO community_uploads (
+        id, user_id, file_name, mime_type, storage_path, public_url, width, height, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [fileId, userId, filename, mimeType, storagePath, publicUrl, width, height, nowIso()],
+  );
 }
 
 function mapFeedPost(row, imagePreviewUrls) {
   return {
-    id: row.id,
-    title: row.title,
-    excerpt: row.excerpt,
-    publishedAt: row.published_at,
     author: {
-      id: row.author_id,
-      externalAccountId: row.external_account_id,
-      displayName: row.display_name,
-      handle: row.handle,
       avatarUrl: row.avatar_url,
+      displayName: row.display_name,
+      externalAccountId: row.external_account_id,
+      handle: row.handle,
+      id: row.author_id,
     },
+    excerpt: row.excerpt,
+    id: row.id,
     imagePreviewUrls,
+    publishedAt: row.published_at,
     stats: {
-      likeCount: row.like_count,
       commentCount: row.comment_count,
       favoriteCount: row.favorite_count,
+      likeCount: row.like_count,
     },
+    title: row.title,
   };
 }
 
 module.exports = {
   createComment,
   createPost,
+  createUploadRecord,
   getCurrentUserSummary,
   getProfileById,
   getPostDetail,

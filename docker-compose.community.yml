@@ -1,0 +1,21 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: visiongenie-community-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: visiongenie_community
+      MYSQL_USER: visiongenie
+      MYSQL_PASSWORD: visiongenie123
+      MYSQL_ROOT_PASSWORD: root123456
+    ports:
+      - "3306:3306"
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - visiongenie-community-mysql-data:/var/lib/mysql
+
+volumes:
+  visiongenie-community-mysql-data:

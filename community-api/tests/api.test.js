@@ -1,23 +1,62 @@
+const path = require('path');
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const dotenv = require('dotenv');
 const request = require('supertest');
 
-process.env.COMMUNITY_API_DB_PATH = ':memory:';
+dotenv.config({ path: path.join(__dirname, '..', '.env') });
 
-const { app } = require('../src/app');
-const { resetDb } = require('../src/db');
-const { seed } = require('../src/seed');
+const hasMysqlConfig = Boolean(
+  process.env.COMMUNITY_MYSQL_HOST &&
+    process.env.COMMUNITY_MYSQL_PORT &&
+    process.env.COMMUNITY_MYSQL_USER &&
+    process.env.COMMUNITY_MYSQL_PASSWORD,
+);
+const canRunMysqlTests =
+  hasMysqlConfig && String(process.env.RUN_COMMUNITY_MYSQL_TESTS || '0') === '1';
+const integrationTest = canRunMysqlTests ? test : test.skip;
+const originalDatabaseName = process.env.COMMUNITY_MYSQL_DATABASE || 'visiongenie_community';
+const testDatabaseName =
+  process.env.COMMUNITY_MYSQL_TEST_DATABASE || `${originalDatabaseName}_test`;
 
 const authHeaders = {
   'x-community-dev-token': 'visiongenie-community-dev-token',
 };
 
-test.beforeEach(() => {
-  resetDb();
-  seed();
+let app;
+let appFactory;
+let resetDb;
+
+test.before(async () => {
+  if (!canRunMysqlTests) {
+    return;
+  }
+
+  process.env.COMMUNITY_MYSQL_DATABASE = testDatabaseName;
+  ({ resetDb } = require('../src/db'));
+  ({ createApp: appFactory } = require('../src/app'));
+  app = await appFactory();
 });
 
-test('returns feed items', async () => {
+test.beforeEach(async () => {
+  if (!canRunMysqlTests) {
+    return;
+  }
+
+  await resetDb();
+  app = await appFactory();
+});
+
+test.after(async () => {
+  if (!canRunMysqlTests) {
+    return;
+  }
+
+  await resetDb();
+  process.env.COMMUNITY_MYSQL_DATABASE = originalDatabaseName;
+});
+
+integrationTest('returns feed items', async () => {
   const response = await request(app).get('/community/feed');
 
   assert.equal(response.statusCode, 200);
@@ -25,7 +64,7 @@ test('returns feed items', async () => {
   assert.equal(response.body.items.length > 0, true);
 });
 
-test('creates a post and returns detail payload', async () => {
+integrationTest('creates a post and returns detail payload', async () => {
   const response = await request(app)
     .post('/community/posts')
     .set(authHeaders)
@@ -41,7 +80,7 @@ test('creates a post and returns detail payload', async () => {
   assert.equal(response.body.viewerContext.canDelete, true);
 });
 
-test('requires auth for create post', async () => {
+integrationTest('requires auth for create post', async () => {
   const response = await request(app).post('/community/posts').send({
     title: '匿名帖子',
     content: '不应创建成功',
@@ -51,7 +90,7 @@ test('requires auth for create post', async () => {
   assert.equal(response.statusCode, 401);
 });
 
-test('creates comment and updates comment count', async () => {
+integrationTest('creates comment and updates comment count', async () => {
   const feedResponse = await request(app).get('/community/feed');
   const postId = feedResponse.body.items[0].id;
 

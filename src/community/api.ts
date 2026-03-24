@@ -127,6 +127,12 @@ export async function setCommunityPostFavorite(
   );
 }
 
+export async function deleteCommunityPost(postId: string): Promise<void> {
+  await fetchJson(`/community/posts/${postId}`, {
+    method: 'DELETE',
+  });
+}
+
 export async function uploadCommunityImage(
   asset: Asset,
 ): Promise<{ url: string } | null> {
@@ -173,6 +179,7 @@ function mapFeedPost(post: ApiFeedPost): CommunityPostSummary {
     summary: post.excerpt,
     title: post.title,
     viewerContext: {
+      canDelete: false,
       favorited: false,
       liked: false,
     },
@@ -184,6 +191,7 @@ function mapPostDetail(post: ApiPostDetail): CommunityPostDetail {
     ...mapFeedPost(post),
     content: post.content,
     viewerContext: {
+      canDelete: Boolean(post.viewerContext?.canDelete),
       favorited: Boolean(post.viewerContext?.favorited),
       liked: Boolean(post.viewerContext?.liked),
     },

@@ -23,6 +23,7 @@ import CommunityHomeSection from './src/community/CommunityHomeSection';
 import CommunityPostDetailView from './src/community/CommunityPostDetailView';
 import {
   createCommunityPost,
+  deleteCommunityPost,
   fetchCommunityComments,
   fetchCommunityFeed,
   fetchCommunityPostDetail,
@@ -239,6 +240,7 @@ export default function App() {
             setDraftComment('');
           }}
           onChangeDraftComment={setDraftComment}
+          onDeletePost={handleDeletePost}
           onSubmitComment={handleSubmitComment}
           onToggleFavorite={handleToggleFavorite}
           onToggleLike={handleToggleLike}
@@ -624,6 +626,40 @@ export default function App() {
       await refreshSelectedPost(selectedPostId);
     } catch (error) {
       Alert.alert('评论失败', getReadableError(error));
+    }
+  }
+
+  async function handleDeletePost() {
+    if (!selectedPostId || !selectedPost?.viewerContext.canDelete) {
+      return;
+    }
+
+    Alert.alert('删除帖子', '确认删除这条帖子吗？删除后将无法恢复。', [
+      {
+        style: 'cancel',
+        text: '取消',
+      },
+      {
+        style: 'destructive',
+        text: '删除',
+        onPress: () => {
+          void confirmDeletePost(selectedPostId);
+        },
+      },
+    ]);
+  }
+
+  async function confirmDeletePost(postId: string) {
+    try {
+      await deleteCommunityPost(postId);
+      setCommunityPosts(previous => previous.filter(post => post.id !== postId));
+      setSelectedPost(null);
+      setSelectedComments([]);
+      setSelectedPostId(null);
+      setDraftComment('');
+      setCommunityMessage('帖子已删除。');
+    } catch (error) {
+      Alert.alert('删除失败', getReadableError(error));
     }
   }
 
