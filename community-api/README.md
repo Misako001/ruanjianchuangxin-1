@@ -32,6 +32,23 @@ The community backend now persists data in MySQL instead of SQLite.
 5. In `community-api/`, run `npm install`.
 6. In `community-api/`, run `npm run dev`.
 
+## Shared API mode
+
+If you want collaborators to write community data into the MySQL database on your computer
+without installing MySQL on their own machines, use one shared `community-api` service.
+
+1. Keep MySQL running only on the host machine.
+2. Set `COMMUNITY_API_HOST=0.0.0.0` in `community-api/.env`.
+3. Let Windows Firewall allow TCP port `4010`.
+4. Tell collaborators to point their clients to your host machine:
+   - Web: copy `web/.env.local.example` to `web/.env.local` and replace the IP.
+   - Mobile: change `src/community/config.ts` from `http://127.0.0.1:4010` to your host
+     machine IP, for example `http://172.23.95.183:4010`.
+5. Give collaborators your host machine IP, for example `http://172.23.95.183:4010`.
+
+If the campus network blocks device-to-device access, collaborators still will not be able to
+reach your machine directly. In that case you need a VPN-style LAN tool or a cloud deployment.
+
 ## Persistence
 
 - Community posts, comments, likes, and favorites are stored in MySQL.

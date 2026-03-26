@@ -67,6 +67,7 @@ yarn-error.log
 /coverage
 /community-api/data/
 /community-api/.env
+/web/.env.local
 /web/.next/
 
 # Yarn

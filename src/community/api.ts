@@ -1,5 +1,6 @@
 import { Asset } from 'react-native-image-picker';
 
+import { COMMUNITY_API_BASE_URL } from './config';
 import {
   CommunityComment,
   CommunityFeedSort,
@@ -7,8 +8,6 @@ import {
   CommunityPostDetail,
   CommunityPostSummary,
 } from '../../shared/community/contracts';
-
-const COMMUNITY_API_BASE_URL = 'http://127.0.0.1:4010';
 const COMMUNITY_DEV_HEADERS = {
   'Content-Type': 'application/json',
   'x-community-dev-token': 'visiongenie-community-dev-token',

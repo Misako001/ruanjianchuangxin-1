@@ -8,6 +8,7 @@ const dataDir = path.join(__dirname, '..', 'data');
 module.exports = {
   devAuthToken:
     process.env.COMMUNITY_API_DEV_TOKEN || 'visiongenie-community-dev-token',
+  host: process.env.COMMUNITY_API_HOST || '0.0.0.0',
   mysql: {
     connectionLimit: Number(process.env.COMMUNITY_MYSQL_CONNECTION_LIMIT || 10),
     database: process.env.COMMUNITY_MYSQL_DATABASE || 'visiongenie_community',
