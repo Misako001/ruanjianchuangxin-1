@@ -40,6 +40,14 @@ Important:
   - cd web
   - npm install
 
+[3.1] One-click install script
+- Included in source package:
+  - scripts/setup-beta-test.ps1
+- Usage:
+  - powershell -ExecutionPolicy Bypass -File scripts/setup-beta-test.ps1
+- If web dependencies are not needed:
+  - powershell -ExecutionPolicy Bypass -File scripts/setup-beta-test.ps1 -SkipWeb
+
 [4] Required local services
 - Metro:
   - npm run start
