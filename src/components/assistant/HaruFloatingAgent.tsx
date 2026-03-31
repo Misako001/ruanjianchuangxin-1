@@ -49,6 +49,7 @@ import {
 import {useAgentVoiceGoal} from '../../agent/useAgentVoiceGoal';
 import {useAgentWorkflowContinuationStore} from '../../agent/workflowContinuationStore';
 import {requestAgentLogin} from '../../agent/authPromptStore';
+import {AGENT_PRESETS, type AgentPresetDefinition} from '../../agent/presets';
 
 const COLLAPSED_SIZE = 64;
 const PANEL_BOTTOM_OFFSET = 92;
@@ -509,6 +510,36 @@ export const HaruFloatingAgent: React.FC<HaruFloatingAgentProps> = ({
     pushChatMessage,
     runGoal,
   ]);
+
+  const applyPreset = useCallback((preset: AgentPresetDefinition) => {
+    setCustomGoal(preset.prompt);
+    setExecutionStrategy(preset.recommendedStrategy);
+    setErrorText('');
+  }, []);
+
+  const runPreset = useCallback(
+    (preset: AgentPresetDefinition) => {
+      if (loading || (agentAvailabilityKnown && !agentAvailable)) {
+        if (agentAvailabilityKnown && !agentAvailable) {
+          pushChatMessage('assistant', '当前未启用 Agent 能力，暂时无法执行该请求。');
+        }
+        return;
+      }
+      setCustomGoal(preset.prompt);
+      setExecutionStrategy(preset.recommendedStrategy);
+      pushChatMessage('user', preset.label);
+      clearVoiceError();
+      runGoal(preset.prompt, {inputSource: 'text'});
+    },
+    [
+      agentAvailabilityKnown,
+      agentAvailable,
+      clearVoiceError,
+      loading,
+      pushChatMessage,
+      runGoal,
+    ],
+  );
 
   const confirmPending = useCallback(async () => {
     if (!latestPlan || pendingActionIds.length === 0 || latestHydratedActions.length === 0) {
@@ -1181,6 +1212,38 @@ export const HaruFloatingAgent: React.FC<HaruFloatingAgentProps> = ({
                   })}
                 </ScrollView>
               </View>
+              <View style={styles.presetRail}>
+                <ScrollView
+                  horizontal
+                  style={styles.strategyScroll}
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.presetRow}>
+                  {AGENT_PRESETS.map(item => (
+                    <View key={item.id} style={styles.presetCard}>
+                      <View style={styles.presetCardHead}>
+                        <Icon name={item.icon} size={14} color="#4338CA" />
+                        <Text style={styles.presetCardTitle}>{item.label}</Text>
+                      </View>
+                      <Text style={styles.presetCardStage}>{item.stageLabel}</Text>
+                      <Text style={styles.presetCardSummary}>{item.summary}</Text>
+                      <View style={styles.presetCardActions}>
+                        <Pressable
+                          style={styles.presetGhostBtn}
+                          testID={`hiyori-preset-fill-${item.id}`}
+                          onPress={() => applyPreset(item)}>
+                          <Text style={styles.presetGhostBtnText}>填入</Text>
+                        </Pressable>
+                        <Pressable
+                          style={styles.presetPrimaryBtn}
+                          testID={`hiyori-preset-run-${item.id}`}
+                          onPress={() => runPreset(item)}>
+                          <Text style={styles.presetPrimaryBtnText}>执行</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  ))}
+                </ScrollView>
+              </View>
               <View style={styles.customGoalWrap}>
                 <TextInput
                   testID="assistant-custom-goal-input"
@@ -1578,6 +1641,77 @@ const styles = StyleSheet.create({
   },
   strategyChipTextActive: {
     color: '#4338CA',
+  },
+  presetRail: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+  },
+  presetRow: {
+    gap: 8,
+    paddingLeft: 2,
+    paddingRight: 8,
+  },
+  presetCard: {
+    width: 176,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(226,232,240,0.92)',
+    backgroundColor: '#F8FAFC',
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    gap: 6,
+  },
+  presetCardHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  presetCardTitle: {
+    color: '#0F172A',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  presetCardStage: {
+    color: '#6366F1',
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  presetCardSummary: {
+    color: '#475569',
+    fontSize: 10,
+    lineHeight: 14,
+  },
+  presetCardActions: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  presetGhostBtn: {
+    flex: 1,
+    minHeight: 30,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(99,102,241,0.18)',
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  presetGhostBtnText: {
+    color: '#4338CA',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  presetPrimaryBtn: {
+    flex: 1,
+    minHeight: 30,
+    borderRadius: 10,
+    backgroundColor: '#4F46E5',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  presetPrimaryBtnText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '700',
   },
   customGoalWrap: {
     marginTop: 2,

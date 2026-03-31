@@ -42,28 +42,7 @@ import {useAgentVoiceGoal} from '../agent/useAgentVoiceGoal';
 import {semanticColors} from '../theme/tokens';
 import {useAgentWorkflowContinuationStore} from '../agent/workflowContinuationStore';
 import {requestAgentLogin} from '../agent/authPromptStore';
-
-const QUICK_PROMPTS: Array<{
-  icon: string;
-  label: string;
-  prompt: string;
-}> = [
-  {
-    icon: 'color-palette',
-    label: '批量调色',
-    prompt: '根据当前状态给我一个调色优化执行计划',
-  },
-  {
-    icon: 'cube',
-    label: '3D 任务',
-    prompt: '先规划 2D 转 3D 任务，再给出下一步建议',
-  },
-  {
-    icon: 'paper-plane',
-    label: '社区发布',
-    prompt: '帮我规划并执行一次社区草稿发布流程',
-  },
-];
+import {AGENT_PRESETS, type AgentPresetDefinition} from '../agent/presets';
 
 const STRATEGY_OPTIONS: Array<{
   value: AgentExecutionStrategy;
@@ -278,6 +257,12 @@ export const AgentScreen: React.FC<AgentScreenProps> = ({
     },
     [],
   );
+
+  const applyPreset = useCallback((preset: AgentPresetDefinition) => {
+    setPrompt(preset.prompt);
+    setExecutionStrategy(preset.recommendedStrategy);
+    setErrorText('');
+  }, []);
 
   const runGoal = useCallback(
     async (goal: string, inputSource: 'text' | 'voice') => {
@@ -509,6 +494,13 @@ export const AgentScreen: React.FC<AgentScreenProps> = ({
     runGoal(prompt, 'text').catch(() => undefined);
   };
 
+  const triggerPresetExecute = (preset: AgentPresetDefinition) => {
+    clearVoiceError();
+    setPrompt(preset.prompt);
+    setExecutionStrategy(preset.recommendedStrategy);
+    runGoal(preset.prompt, 'text').catch(() => undefined);
+  };
+
   const toVoicePhaseText = (phase: string): string => {
     if (phase === 'listening') {
       return '正在收音';
@@ -539,14 +531,45 @@ export const AgentScreen: React.FC<AgentScreenProps> = ({
           </View>
           <Text style={styles.sectionTitle}>任务目标</Text>
         </View>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.quickChipRow}>
-          {QUICK_PROMPTS.map(item => (
-            <Pressable key={item.label} style={styles.quickChip} onPress={() => setPrompt(item.prompt)}>
-              <Icon name={item.icon} size={14} color="#A34A3C" />
-              <Text style={styles.quickChipText}>{item.label}</Text>
-            </Pressable>
-          ))}
-        </ScrollView>
+        <View style={styles.presetSection}>
+          <Text style={styles.metaLabel}>任务预设</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.presetRow}>
+            {AGENT_PRESETS.map(item => (
+              <View key={item.id} style={styles.presetCard}>
+                <View style={styles.presetHead}>
+                  <View style={styles.presetIconWrap}>
+                    <Icon name={item.icon} size={14} color="#A34A3C" />
+                  </View>
+                  <View style={styles.presetHeadTextWrap}>
+                    <Text style={styles.presetTitle}>{item.label}</Text>
+                    <Text style={styles.presetStage}>{item.stageLabel}</Text>
+                  </View>
+                </View>
+                <Text style={styles.presetSummary}>{item.summary}</Text>
+                <Text style={styles.presetMeta}>
+                  推荐策略 {STRATEGY_OPTIONS.find(option => option.value === item.recommendedStrategy)?.label || item.recommendedStrategy}
+                </Text>
+                <View style={styles.presetActionRow}>
+                  <Pressable
+                    style={styles.presetGhostBtn}
+                    testID={`agent-preset-fill-${item.id}`}
+                    onPress={() => applyPreset(item)}>
+                    <Text style={styles.presetGhostBtnText}>填入指令</Text>
+                  </Pressable>
+                  <Pressable
+                    style={styles.presetPrimaryBtn}
+                    testID={`agent-preset-run-${item.id}`}
+                    onPress={() => triggerPresetExecute(item)}>
+                    <Text style={styles.presetPrimaryBtnText}>一键执行</Text>
+                  </Pressable>
+                </View>
+              </View>
+            ))}
+          </ScrollView>
+        </View>
         <View style={styles.strategyWrap}>
           <Text style={styles.metaLabel}>执行策略</Text>
           <ScrollView
@@ -881,6 +904,88 @@ const styles = StyleSheet.create({
   },
   promptComposer: {
     minHeight: 132,
+  },
+  presetSection: {
+    gap: 8,
+  },
+  presetRow: {
+    gap: 10,
+    paddingRight: 10,
+  },
+  presetCard: {
+    width: 248,
+    borderRadius: 20,
+    padding: 14,
+    gap: 8,
+    backgroundColor: 'rgba(255,255,255,0.58)',
+    borderWidth: 1,
+    borderColor: 'rgba(163,74,60,0.12)',
+  },
+  presetHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  presetIconWrap: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(163,74,60,0.12)',
+  },
+  presetHeadTextWrap: {
+    flex: 1,
+    gap: 2,
+  },
+  presetTitle: {
+    ...canvasText.bodyStrong,
+    color: '#2F2926',
+  },
+  presetStage: {
+    ...canvasText.caption,
+    color: '#A34A3C',
+  },
+  presetSummary: {
+    ...canvasText.body,
+    color: 'rgba(110,90,80,0.88)',
+    lineHeight: 18,
+  },
+  presetMeta: {
+    ...canvasText.caption,
+    color: 'rgba(110,90,80,0.82)',
+  },
+  presetActionRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  presetGhostBtn: {
+    flex: 1,
+    minHeight: 38,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(163,74,60,0.14)',
+    backgroundColor: 'rgba(255,255,255,0.74)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+  },
+  presetGhostBtnText: {
+    ...canvasText.bodyStrong,
+    color: '#7B4035',
+  },
+  presetPrimaryBtn: {
+    flex: 1,
+    minHeight: 38,
+    borderRadius: 14,
+    backgroundColor: '#A34A3C',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+  },
+  presetPrimaryBtnText: {
+    ...canvasText.bodyStrong,
+    color: '#FFF6F2',
   },
   quickChipRow: {
     gap: 8,

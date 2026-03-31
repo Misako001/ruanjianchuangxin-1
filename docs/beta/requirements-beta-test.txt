@@ -1,0 +1,74 @@
+VisionGenie Beta Test Requirements
+
+[1] If testers only need to install and click through the APK
+- Required:
+  - Android phone
+  - USB cable or file transfer method
+  - APK file: deliverables/VisionGenie-Beta-debug.apk
+- Not required:
+  - Node.js
+  - npm
+  - Android Studio
+  - project source code
+
+Important:
+- The current APK is a debug APK.
+- If the tester only installs the APK without starting the local services, many AI functions will not work completely.
+
+[2] If testers need to run the full project locally and test all features
+- Required source code:
+  - Full project repository
+- Required software:
+  - Node.js >= 22.11.0
+  - npm
+  - adb (Android platform-tools)
+  - Android phone with USB debugging enabled
+- Required backend config:
+  - backend/.env
+  - valid MODEL_API_KEY / MODEL_BASE_URL / MODEL_PRIMARY_NAME
+  - valid ASR_API_KEY
+  - valid TRIPO_SECRET_KEY
+  - valid JWT_SECRET
+
+[3] Install dependencies
+- Root:
+  - npm install
+- Backend:
+  - cd backend
+  - npm install
+- Web community (optional):
+  - cd web
+  - npm install
+
+[4] Required local services
+- Metro:
+  - npm run start
+- Backend gateway:
+  - npm run backend:start
+- Web community (optional):
+  - cd web
+  - npm run dev
+
+[5] Android device commands
+- Check device:
+  - adb devices
+- Port reverse:
+  - adb reverse tcp:8081 tcp:8081
+  - adb reverse tcp:8787 tcp:8787
+- Install APK:
+  - adb install -r deliverables/VisionGenie-Beta-debug.apk
+- Launch app:
+  - adb shell am start -n com.visiongenieapp/.MainActivity
+
+[6] Feature notes
+- Create / Agent / Community:
+  - require Metro + backend
+- 2D to 3D:
+  - also requires Tripo network access and valid TRIPO_SECRET_KEY
+- Web community:
+  - optional
+  - default URL: http://127.0.0.1:4020
+
+[7] Recommended reference document
+- See:
+  - docs/beta/BETA测试启动说明.md

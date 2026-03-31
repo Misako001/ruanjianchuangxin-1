@@ -279,4 +279,19 @@ describe('AgentScreen action args injection', () => {
     expect(text).toContain('执行前缺少上下文');
     expect(agentApi.executePlan).not.toHaveBeenCalled();
   }, 15000);
+
+  it('fills composer with preset prompt when preset button is pressed', async () => {
+    await renderScreen();
+
+    const presetFillButton = renderer.root.findByProps({
+      testID: 'agent-preset-fill-batch_grading',
+    });
+
+    await act(async () => {
+      presetFillButton.props.onPress();
+    });
+
+    const input = renderer.root.findByType(TextInput);
+    expect(input.props.value).toContain('批量调色工作流');
+  }, 15000);
 });
