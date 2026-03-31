@@ -27,6 +27,21 @@ const planAgentActions = request => {
     plannerSource: 'cloud',
     actions,
     reasoningSummary: `Hybrid意图编译(${inputSource})：${compiled.reasoning}`,
+    summarySource: 'model',
+    clarificationRequired: compiled.clarificationRequired === true,
+    clarificationQuestion: compiled.clarificationQuestion || undefined,
+    executionStrategy:
+      request?.executionStrategy === 'fast' ||
+      request?.executionStrategy === 'quality' ||
+      request?.executionStrategy === 'cost'
+        ? request.executionStrategy
+        : undefined,
+    strategySource: request?.executionStrategy ? 'user' : 'adaptive',
+    fallback: {
+      used: compiled.mode === 'fallback',
+      reason: compiled.mode === 'fallback' ? 'fallback_to_page_summary' : '',
+    },
+    decisionPath: compiled.mode === 'fallback' ? 'fallback_direct' : 'planned',
     estimatedSteps: actions.length,
     undoPlan: [
       '可撤销最近一次自动执行',

@@ -117,7 +117,7 @@ const normalizeNetworkErrorMessage = (error: Error | null): string => {
     return 'Network request failed (请确认后端已启动，并执行 adb reverse tcp:8787 tcp:8787)';
   }
   if (/aborted|abort/i.test(raw)) {
-    return 'Request aborted (后端响应超时，请稍后重试)';
+    return 'Request timeout (后端响应超时，请稍后重试)';
   }
   return raw;
 };
@@ -129,7 +129,7 @@ export async function requestApi<T>(
     body,
     headers,
     port = 8787,
-    timeoutMs = 15000,
+    timeoutMs = 30000,
     auth = false,
     ...rest
   }: RequestOptions = {},

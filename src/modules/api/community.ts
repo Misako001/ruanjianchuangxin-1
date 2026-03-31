@@ -7,6 +7,13 @@ interface CommunityUploadFile {
   type?: string;
 }
 
+const COMMUNITY_TIMEOUT = {
+  feed: 30_000,
+  upload: 180_000,
+  draftWrite: 120_000,
+  interaction: 30_000,
+} as const;
+
 export const communityApi = {
   async getFeed(
     page = 1,
@@ -15,6 +22,7 @@ export const communityApi = {
   ): Promise<Pagination<CommunityPost>> {
     return requestApi<Pagination<CommunityPost>>(
       `/v1/modules/community/feed?page=${page}&size=${size}&filter=${filter}`,
+      {timeoutMs: COMMUNITY_TIMEOUT.feed},
     );
   },
 
@@ -25,21 +33,21 @@ export const communityApi = {
   ): Promise<Pagination<CommunityPost>> {
     return requestApi<Pagination<CommunityPost>>(
       `/v1/modules/community/me/posts?status=${status}&page=${page}&size=${size}`,
-      {auth: true},
+      {auth: true, timeoutMs: COMMUNITY_TIMEOUT.feed},
     );
   },
 
   async getLikedPosts(page = 1, size = 10): Promise<Pagination<CommunityPost>> {
     return requestApi<Pagination<CommunityPost>>(
       `/v1/modules/community/me/liked?page=${page}&size=${size}`,
-      {auth: true},
+      {auth: true, timeoutMs: COMMUNITY_TIMEOUT.feed},
     );
   },
 
   async getSavedPosts(page = 1, size = 10): Promise<Pagination<CommunityPost>> {
     return requestApi<Pagination<CommunityPost>>(
       `/v1/modules/community/me/saved?page=${page}&size=${size}`,
-      {auth: true},
+      {auth: true, timeoutMs: COMMUNITY_TIMEOUT.feed},
     );
   },
 
@@ -57,6 +65,7 @@ export const communityApi = {
       method: 'POST',
       auth: true,
       body: form,
+      timeoutMs: COMMUNITY_TIMEOUT.upload,
     });
   },
 
@@ -72,6 +81,7 @@ export const communityApi = {
       method: 'POST',
       auth: true,
       body: payload,
+      timeoutMs: COMMUNITY_TIMEOUT.draftWrite,
     });
     return response.item;
   },
@@ -93,6 +103,7 @@ export const communityApi = {
         method: 'PUT',
         auth: true,
         body: payload,
+        timeoutMs: COMMUNITY_TIMEOUT.draftWrite,
       },
     );
     return response.item;
@@ -104,6 +115,7 @@ export const communityApi = {
       {
         method: 'POST',
         auth: true,
+        timeoutMs: COMMUNITY_TIMEOUT.draftWrite,
       },
     );
     return response.item;
@@ -115,6 +127,7 @@ export const communityApi = {
       {
         method: 'DELETE',
         auth: true,
+        timeoutMs: COMMUNITY_TIMEOUT.interaction,
       },
     );
   },
@@ -124,6 +137,7 @@ export const communityApi = {
       method: 'POST',
       auth: true,
       body: {liked},
+      timeoutMs: COMMUNITY_TIMEOUT.interaction,
     });
   },
 
@@ -132,12 +146,14 @@ export const communityApi = {
       method: 'POST',
       auth: true,
       body: {saved},
+      timeoutMs: COMMUNITY_TIMEOUT.interaction,
     });
   },
 
   async getComments(postId: string, page = 1, size = 20): Promise<Pagination<CommunityComment>> {
     return requestApi<Pagination<CommunityComment>>(
       `/v1/modules/community/posts/${encodeURIComponent(postId)}/comments?page=${page}&size=${size}`,
+      {timeoutMs: COMMUNITY_TIMEOUT.feed},
     );
   },
 
@@ -155,6 +171,7 @@ export const communityApi = {
           content,
           parentId: parentId || null,
         },
+        timeoutMs: COMMUNITY_TIMEOUT.interaction,
       },
     );
     return response.item;

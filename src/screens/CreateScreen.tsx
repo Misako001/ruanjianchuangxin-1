@@ -20,7 +20,12 @@ import {
   type SkImage,
 } from '@shopify/react-native-skia';
 import {useImagePicker} from '../hooks/useImagePicker';
-import {defaultColorGradingParams, type ColorGradingParams} from '../types/colorGrading';
+import {
+  BUILTIN_PRESETS,
+  defaultColorGradingParams,
+  type ColorGradingParams,
+  type ColorPreset,
+} from '../types/colorGrading';
 import {buildVoiceImageContext} from '../voice/imageContext';
 import {parseLocalVoiceCommand} from '../voice/localParser';
 import {applyVoiceInterpretation, formatInterpretationSummary} from '../voice/paramApplier';
@@ -41,6 +46,7 @@ import {SegmentedControl} from '../components/ui/SegmentedControl';
 import {HERO_CREATE} from '../assets/design';
 import {canvasText, canvasUi, cardSurfaceBlue, glassShadow} from '../theme/canvasDesign';
 import {buildPreviewColorMatrix} from '../colorEngine/previewColorMatrix';
+import {exportGradedResult} from '../colorEngine/exportService';
 import {semanticColors} from '../theme/tokens';
 
 type CreateMode = 'voice' | 'pro';
@@ -109,52 +115,20 @@ const formatVoiceTranscribeError = (error: unknown): string => {
   return normalizeSpeechErrorMessage(fallback);
 };
 
-const CREATE_PRESETS: Array<{
-  name: string;
-  note: string;
-  exposure: number;
-  contrast: number;
-  temperature: number;
-  saturation: number;
-  vibrance: number;
-}> = [
-  {
-    name: '电影胶片',
-    note: '暖调电影感 + 更稳的反差',
-    exposure: 0.2,
-    contrast: 18,
-    temperature: 16,
-    saturation: 6,
-    vibrance: 14,
-  },
-  {
-    name: '赛博朋克',
-    note: '冷暖对撞 + 高饱和霓虹',
-    exposure: 0.08,
-    contrast: 26,
-    temperature: -14,
-    saturation: 20,
-    vibrance: 26,
-  },
-  {
-    name: '日系清新',
-    note: '空气感 + 干净肤色',
-    exposure: 0.26,
-    contrast: -8,
-    temperature: 10,
-    saturation: -10,
-    vibrance: 8,
-  },
-  {
-    name: '复古胶卷',
-    note: '暖棕胶片 + 旧时光',
-    exposure: 0.12,
-    contrast: -16,
-    temperature: 18,
-    saturation: -14,
-    vibrance: -6,
-  },
-];
+const PRESET_CATEGORY_LABELS: Record<ColorPreset['category'], string> = {
+  cinematic: '电影',
+  portrait: '人像',
+  landscape: '风光',
+  artistic: '艺术',
+  vintage: '复古',
+  custom: '基础',
+};
+
+const buildPresetNote = (preset: ColorPreset): string => {
+  const categoryLabel = PRESET_CATEGORY_LABELS[preset.category];
+  const tagLabel = preset.tags.slice(0, 2).join(' / ');
+  return tagLabel ? `${categoryLabel} · ${tagLabel}` : categoryLabel;
+};
 
 const sanitizeBase64 = (raw?: string): string =>
   String(raw || '').replace(/^data:image\/\w+;base64,/, '');
@@ -163,6 +137,7 @@ const toColorRequestContext = (
   locale: string,
   currentParams: ColorGradingParams,
   context: ReturnType<typeof buildVoiceImageContext>,
+  selectedImage: ReturnType<typeof useImagePicker>['selectedImage'],
 ): ColorRequestContext | null => {
   if (!context) {
     return null;
@@ -172,6 +147,13 @@ const toColorRequestContext = (
     currentParams,
     image: context.image,
     imageStats: context.imageStats,
+    sourceUri: selectedImage?.success ? selectedImage.uri : undefined,
+    fileName: selectedImage?.success ? selectedImage.fileName : undefined,
+    nativeSourcePath: selectedImage?.success ? selectedImage.nativeSourcePath : undefined,
+    workingSpaceHint: selectedImage?.success ? selectedImage.workingSpaceHint : undefined,
+    decodeStrategy: selectedImage?.success ? selectedImage.decodeStrategy : undefined,
+    isRaw: selectedImage?.success ? selectedImage.isRaw : undefined,
+    bitDepthHint: selectedImage?.success ? selectedImage.bitDepthHint : undefined,
   };
 };
 
@@ -224,11 +206,14 @@ interface CreateScreenProps {
 }
 
 export const CreateScreen: React.FC<CreateScreenProps> = ({capabilities}) => {
+  const scrollRef = useRef<ScrollView | null>(null);
+  const previewCaptureRef = useRef<View | null>(null);
   const [mode, setMode] = useState<CreateMode>('voice');
   const [params, setParams] = useState<ColorGradingParams>(defaultColorGradingParams);
   const [summary, setSummary] = useState('');
   const [errorText, setErrorText] = useState('');
   const [loading, setLoading] = useState(false);
+  const [savingImage, setSavingImage] = useState(false);
   const [voiceText, setVoiceText] = useState('');
   const [recording, setRecording] = useState(false);
   const [voicePhase, setVoicePhase] = useState<VoiceInputPhase>('idle');
@@ -239,6 +224,7 @@ export const CreateScreen: React.FC<CreateScreenProps> = ({capabilities}) => {
   const [locale] = useState('zh-CN');
   const [skImage, setSkImage] = useState<SkImage | null>(null);
   const [previewWidth, setPreviewWidth] = useState(0);
+  const previewCardOffsetYRef = useRef(0);
   const selectedImageUriRef = useRef('');
   const liveTranscriptRef = useRef('');
   const autoSubmittedTranscriptRef = useRef('');
@@ -248,6 +234,14 @@ export const CreateScreen: React.FC<CreateScreenProps> = ({capabilities}) => {
   const pendingParseRef = useRef(false);
 
   const colorCapability = capabilities.find(item => item.module === 'color');
+  const createPresets = useMemo(
+    () =>
+      BUILTIN_PRESETS.filter(preset => preset.id !== 'preset_original').map(preset => ({
+        preset,
+        note: buildPresetNote(preset),
+      })),
+    [],
+  );
   const setAgentColorContext = useAgentExecutionContextStore(state => state.setColorContext);
 
   const {selectedImage, pickFromGallery, pickFromCamera, clearImage} = useImagePicker({
@@ -286,8 +280,8 @@ export const CreateScreen: React.FC<CreateScreenProps> = ({capabilities}) => {
   );
 
   const requestContext = useMemo(
-    () => toColorRequestContext(locale, params, imageContext),
-    [imageContext, locale, params],
+    () => toColorRequestContext(locale, params, imageContext, selectedImage),
+    [imageContext, locale, params, selectedImage],
   );
 
   useEffect(() => {
@@ -681,27 +675,71 @@ export const CreateScreen: React.FC<CreateScreenProps> = ({capabilities}) => {
     setSummary(`手动调色: ${label} -> ${formatted}`);
   };
 
-  const applyPreset = (preset: (typeof CREATE_PRESETS)[number]) => {
-    setParams(prev => ({
-      ...prev,
-      basic: {
-        ...prev.basic,
-        exposure: preset.exposure,
-        contrast: preset.contrast,
-      },
-      colorBalance: {
-        ...prev.colorBalance,
-        temperature: preset.temperature,
-        saturation: preset.saturation,
-        vibrance: preset.vibrance,
-      },
-    }));
-    setHistoryEntries(prev => [`${new Date().toLocaleTimeString()} 预设:${preset.name}`, ...prev].slice(0, 8));
-    setShowPresets(false);
+  const applyPreset = (presetCard: (typeof createPresets)[number]) => {
+    const nextParams = JSON.parse(JSON.stringify(presetCard.preset.params)) as ColorGradingParams;
+    setParams(nextParams);
+    setSummary(`已应用风格预设: ${presetCard.preset.name}\n${presetCard.note}`);
+    setHistoryEntries(prev =>
+      [`${new Date().toLocaleTimeString()} 预设:${presetCard.preset.name}`, ...prev].slice(0, 8),
+    );
+    if (previewCardOffsetYRef.current > 0) {
+      scrollRef.current?.scrollTo({
+        y: Math.max(0, previewCardOffsetYRef.current - 16),
+        animated: true,
+      });
+    }
+  };
+
+  const handleSaveImage = async () => {
+    if (!selectedImage?.success) {
+      Alert.alert('无法保存', '请先上传图片后再保存。');
+      return;
+    }
+
+    try {
+      setSavingImage(true);
+      setErrorText('');
+      const result = await exportGradedResult({
+        targetRef: previewCaptureRef,
+        spec: {
+          format: 'jpeg',
+          quality: 0.92,
+          sourcePolicy: 'allow_fallback',
+        },
+        params,
+        metadata: {
+          engineMode: 'pro',
+          workingSpace: selectedImage.workingSpaceHint || 'linear_srgb',
+          sourceUri: selectedImage.uri,
+          nativeSourcePath: selectedImage.nativeSourcePath,
+          isRawSource: Boolean(selectedImage.isRaw),
+          sourceBitDepth: selectedImage.bitDepthHint,
+        },
+      });
+
+      const successMessage = result.savedToGallery
+        ? `已保存到相册${result.galleryDisplayName ? `：${result.galleryDisplayName}` : ''}`
+        : '导出完成，但未写入系统相册。';
+      const warningText = result.warnings.length ? `\n${result.warnings.join('\n')}` : '';
+      setSummary(prev =>
+        prev ? `${prev}\n保存结果: ${successMessage}` : `保存结果: ${successMessage}`,
+      );
+      Alert.alert('保存完成', `${successMessage}${warningText}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '保存图片失败';
+      setErrorText(message);
+      Alert.alert('保存失败', message);
+    } finally {
+      setSavingImage(false);
+    }
   };
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.content}>
+    <ScrollView
+      ref={scrollRef}
+      testID="create-scroll-view"
+      style={styles.root}
+      contentContainerStyle={styles.content}>
       <PageHero
         image={HERO_CREATE}
         title="创作调色"
@@ -750,9 +788,12 @@ export const CreateScreen: React.FC<CreateScreenProps> = ({capabilities}) => {
             </View>
           </View>
           <View style={styles.presetGrid}>
-            {CREATE_PRESETS.map(item => (
-              <Pressable key={item.name} style={styles.presetTile} onPress={() => applyPreset(item)}>
-                <Text style={styles.presetTileTitle}>{item.name}</Text>
+            {createPresets.map(item => (
+              <Pressable
+                key={item.preset.id}
+                style={styles.presetTile}
+                onPress={() => applyPreset(item)}>
+                <Text style={styles.presetTileTitle}>{item.preset.name}</Text>
                 <Text style={styles.presetTileNote}>{item.note}</Text>
               </Pressable>
             ))}
@@ -789,7 +830,12 @@ export const CreateScreen: React.FC<CreateScreenProps> = ({capabilities}) => {
         </GlassCard>
       ) : null}
 
-      <GlassCard style={styles.card}>
+      <View
+        testID="create-preview-card-anchor"
+        onLayout={event => {
+          previewCardOffsetYRef.current = Math.max(0, Math.round(event.nativeEvent.layout.y));
+        }}>
+        <GlassCard style={styles.card}>
         {!selectedImage?.success ? (
           <View style={styles.uploadWrap}>
             <View style={styles.sectionHead}>
@@ -819,7 +865,11 @@ export const CreateScreen: React.FC<CreateScreenProps> = ({capabilities}) => {
           </View>
         ) : (
           <View>
-            <View style={styles.previewFrame} onLayout={onPreviewLayout}>
+            <View
+              ref={previewCaptureRef}
+              testID="create-preview-frame"
+              style={styles.previewFrame}
+              onLayout={onPreviewLayout}>
               {useSkiaPreview ? (
                 <Canvas style={styles.preview}>
                   <SkiaImage image={skImage} x={0} y={0} width={previewWidth} height={220} fit="cover">
@@ -837,19 +887,28 @@ export const CreateScreen: React.FC<CreateScreenProps> = ({capabilities}) => {
               <PrimaryButton
                 label={loading ? '处理中...' : 'AI 首轮'}
                 onPress={runInitialSuggest}
-                disabled={loading}
+                disabled={loading || savingImage}
                 icon={<Icon name="sparkles-outline" size={16} color="#FFFFFF" />}
+              />
+              <PrimaryButton
+                label={savingImage ? '保存中...' : '保存'}
+                onPress={handleSaveImage}
+                disabled={loading || savingImage}
+                variant="secondary"
+                icon={<Icon name="download-outline" size={16} color={semanticColors.text.primary} />}
               />
               <PrimaryButton
                 label="重选"
                 onPress={clearImage}
+                disabled={savingImage}
                 variant="secondary"
                 icon={<Icon name="refresh-outline" size={16} color={semanticColors.text.primary} />}
               />
             </View>
           </View>
         )}
-      </GlassCard>
+        </GlassCard>
+      </View>
 
       {mode === 'voice' ? (
         <GlassCard style={styles.card}>
@@ -1049,6 +1108,7 @@ const styles = StyleSheet.create({
   },
   previewActions: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 10,
     marginTop: 12,
   },

@@ -180,8 +180,9 @@ export const exportGradedResult = async ({
   metadata,
 }: ExportRequest): Promise<ExportResult> => {
   const {normalized, warnings} = validateExportSpec(spec);
+  const canAttemptNativeOnlyExport = Boolean(metadata?.sourceUri && metadata?.workingSpace);
 
-  if (!targetRef) {
+  if (!targetRef && !canAttemptNativeOnlyExport) {
     throw new Error('导出目标不可用');
   }
 
@@ -273,6 +274,10 @@ export const exportGradedResult = async ({
 
   if (normalized.format === 'tiff16') {
     downgradedWarnings.push('当前已回退为预览导出，TIFF 容器临时输出为兼容 PNG。');
+  }
+
+  if (!targetRef) {
+    throw new Error('当前导出仅支持原生链路，预览回退导出不可用。');
   }
 
   const uri = await captureRef(targetRef as never, {

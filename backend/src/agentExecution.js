@@ -13,6 +13,8 @@ const KNOWN_ERROR_CODES = new Set([
   'client_required',
 ]);
 
+const cloneJson = value => JSON.parse(JSON.stringify(value));
+
 const CLIENT_REQUIRED_ADAPTERS = {
   'navigation::navigate_tab': async ({action}) => ({
     status: 'client_required',
@@ -21,6 +23,24 @@ const CLIENT_REQUIRED_ADAPTERS = {
     retryable: true,
   }),
   'app::summarize_current_page': async ({action}) => ({
+    status: 'client_required',
+    message: `client_action_required:${action.domain}.${action.operation}`,
+    errorCode: 'client_required',
+    retryable: true,
+  }),
+  'grading::apply_visual_suggest': async ({action}) => ({
+    status: 'client_required',
+    message: `client_action_required:${action.domain}.${action.operation}`,
+    errorCode: 'client_required',
+    retryable: true,
+  }),
+  'community::create_draft': async ({action}) => ({
+    status: 'client_required',
+    message: `client_action_required:${action.domain}.${action.operation}`,
+    errorCode: 'client_required',
+    retryable: true,
+  }),
+  'community::publish_draft': async ({action}) => ({
     status: 'client_required',
     message: `client_action_required:${action.domain}.${action.operation}`,
     errorCode: 'client_required',
@@ -236,6 +256,27 @@ const parseSettingsPatch = args => {
 
 const toActionKey = action => `${action.domain}::${action.operation}`;
 
+const resolveExecutionStatus = actionResults => {
+  const hasStatus = status =>
+    actionResults.some(item => String(item?.status || '').trim() === status);
+  if (hasStatus('pending_confirm')) {
+    return 'pending_confirm';
+  }
+  if (hasStatus('waiting_async_result')) {
+    return 'waiting_async_result';
+  }
+  if (hasStatus('failed')) {
+    return 'failed';
+  }
+  if (hasStatus('client_required')) {
+    return 'client_required';
+  }
+  if (hasStatus('cancelled')) {
+    return 'cancelled';
+  }
+  return 'applied';
+};
+
 const buildWorkflowState = ({actions, actionResults, status}) => {
   const totalSteps = Array.isArray(actions) ? actions.length : 0;
   if (!totalSteps) {
@@ -266,6 +307,353 @@ const buildWorkflowState = ({actions, actionResults, status}) => {
     currentStep,
     totalSteps,
     nextRequiredContext,
+  };
+};
+
+const mapWorkflowRunStatus = status => {
+  if (status === 'pending_confirm') {
+    return 'waiting_confirm';
+  }
+  if (status === 'waiting_async_result') {
+    return 'waiting_async_result';
+  }
+  if (status === 'client_required') {
+    return 'waiting_context';
+  }
+  if (status === 'failed') {
+    return 'failed';
+  }
+  if (status === 'cancelled') {
+    return 'cancelled';
+  }
+  return 'succeeded';
+};
+
+const buildWorkflowRunSnapshot = ({runId, workflowState, status, actionResults}) => {
+  const waitingItem = actionResults.find(item =>
+    ['client_required', 'pending_confirm', 'waiting_async_result'].includes(String(item?.status || '')),
+  );
+  const waitingOutput = waitingItem?.output && typeof waitingItem.output === 'object' ? waitingItem.output : {};
+  return {
+    runId,
+    status: mapWorkflowRunStatus(status),
+    currentStep: Number(workflowState?.currentStep || 0),
+    totalSteps: Number(workflowState?.totalSteps || 0),
+    nextRequiredContext: workflowState?.nextRequiredContext ?? null,
+    blockedReason:
+      status === 'client_required'
+        ? 'waiting_context'
+        : status === 'pending_confirm'
+          ? 'waiting_confirm'
+          : status === 'waiting_async_result'
+            ? 'waiting_async_result'
+            : null,
+    updatedAt: new Date().toISOString(),
+    waitingActionId: waitingItem?.action?.actionId || null,
+    pendingTask:
+      status === 'waiting_async_result' && waitingOutput?.taskId
+        ? {
+            taskId: String(waitingOutput.taskId || ''),
+            taskStatus: String(waitingOutput.status || 'processing'),
+            pollAfterMs: Math.max(1500, Number(waitingOutput.pollAfterMs || 5000)),
+          }
+        : null,
+    lastWorkerAt: new Date().toISOString(),
+    nextPollAt:
+      status === 'waiting_async_result' && waitingOutput?.pollAfterMs
+        ? new Date(Date.now() + Math.max(1500, Number(waitingOutput.pollAfterMs || 5000))).toISOString()
+        : null,
+  };
+};
+
+const buildToolCalls = actionResults =>
+  actionResults.map((item, index) => ({
+    actionId: String(item?.action?.actionId || `action_${index + 1}`),
+    serverId: item?.action?.toolRef?.serverId || 'local-agent',
+    toolName: item?.action?.toolRef?.toolName || `${item?.action?.domain || 'app'}.${item?.action?.operation || 'unknown'}`,
+    status: String(item?.status || 'unknown'),
+    latencyMs: Number(item?.durationMs || 0),
+    requestId: `req_${index + 1}_${Date.now()}`,
+    retryCount: Math.max(0, Number(item?.attempts || 1) - 1),
+    errorCode: item?.errorCode || undefined,
+  }));
+
+const buildResultCards = actionResults =>
+  actionResults.map(item => ({
+    kind:
+      item?.status === 'failed'
+        ? 'failure'
+        : item?.status === 'client_required'
+          ? 'context_required'
+          : item?.status === 'pending_confirm'
+            ? 'confirmation'
+            : item?.status === 'waiting_async_result'
+              ? 'async_wait'
+              : 'tool_result',
+    title: `${String(item?.action?.domain || 'agent')} · ${String(item?.action?.operation || 'action')}`,
+    summary: String(item?.message || ''),
+    status: String(item?.status || ''),
+    artifact: item?.output && typeof item.output === 'object' ? cloneJson(item.output) : undefined,
+    nextAction:
+      item?.status === 'client_required'
+        ? {
+            type: 'provide_context',
+            requiredContext: item?.action?.preconditions?.[0] || null,
+          }
+        : item?.status === 'pending_confirm'
+          ? {
+              type: 'confirm',
+              actionId: item?.action?.actionId || '',
+            }
+          : item?.status === 'waiting_async_result'
+            ? {
+                type: 'wait_async',
+                actionId: item?.action?.actionId || '',
+                pollAfterMs: Math.max(1500, Number(item?.output?.pollAfterMs || 5000)),
+              }
+            : undefined,
+    recovery:
+      item?.status === 'failed'
+        ? {
+            retryable: Boolean(item?.retryable),
+            errorCode: item?.errorCode || 'tool_error',
+          }
+        : undefined,
+  }));
+
+const calculateCompletionScore = actionResults => {
+  if (!Array.isArray(actionResults) || actionResults.length === 0) {
+    return 0;
+  }
+  const weights = {
+    applied: 1,
+    skipped: 1,
+    pending_confirm: 0.6,
+    waiting_async_result: 0.5,
+    client_required: 0.4,
+    failed: 0.1,
+    cancelled: 0,
+  };
+  const total = actionResults.reduce((sum, item) => sum + (weights[item.status] ?? 0), 0);
+  return Math.round((total / actionResults.length) * 100) / 100;
+};
+
+const buildRecoverySuggestions = ({status, workflowState, actionResults, runId}) => {
+  const suggestions = [];
+  if (status === 'client_required' && workflowState?.nextRequiredContext) {
+    suggestions.push({
+      type: 'provide_context',
+      label: '补齐上下文后继续',
+      actionRef: {
+        requiredContext: workflowState.nextRequiredContext,
+        runId,
+      },
+    });
+  }
+  if (status === 'pending_confirm') {
+    suggestions.push({
+      type: 'confirm',
+      label: '确认剩余动作',
+      actionRef: {runId},
+    });
+  }
+  if (status === 'waiting_async_result') {
+    suggestions.push({
+      type: 'wait_async',
+      label: '等待异步结果并续跑',
+      actionRef: {runId},
+    });
+  }
+  if (status === 'failed') {
+    const failedAction = actionResults.find(item => item.status === 'failed');
+    suggestions.push({
+      type: 'retry',
+      label: '重试失败步骤',
+      actionRef: {
+        runId,
+        actionId: failedAction?.action?.actionId || '',
+      },
+    });
+  }
+  return suggestions;
+};
+
+const buildResultSummary = ({status, actionResults, workflowState}) => {
+  const failedCount = actionResults.filter(item => item.status === 'failed').length;
+  const appliedCount = actionResults.filter(item => item.status === 'applied').length;
+  const clientRequiredCount = actionResults.filter(item => item.status === 'client_required').length;
+  if (status === 'applied') {
+    return {
+      done: `已完成 ${appliedCount} 项动作。`,
+      why: '工作流已顺利执行完成。',
+      next: '可继续发起新的 Agent 指令。',
+    };
+  }
+  if (status === 'client_required') {
+    return {
+      done: `已执行 ${appliedCount} 项动作。`,
+      why: `仍有 ${clientRequiredCount} 项动作依赖客户端上下文或权限。`,
+      next: workflowState?.nextRequiredContext
+        ? `补齐 ${workflowState.nextRequiredContext} 后可继续续跑。`
+        : '补齐上下文后可继续续跑。',
+    };
+  }
+  if (status === 'pending_confirm') {
+    return {
+      done: `已自动完成 ${appliedCount} 项低风险动作。`,
+      why: '剩余动作需要用户确认。',
+      next: '确认后即可继续执行剩余步骤。',
+    };
+  }
+  if (status === 'waiting_async_result') {
+    return {
+      done: `已启动 ${appliedCount} 项前置动作。`,
+      why: '当前存在后台异步任务正在处理中。',
+      next: '等待后台结果返回后即可自动续跑。',
+    };
+  }
+  if (status === 'failed') {
+    return {
+      done: `已完成 ${appliedCount} 项动作。`,
+      why: `当前有 ${failedCount} 项动作失败。`,
+      next: '可查看失败卡片后重试或补齐依赖继续。',
+    };
+  }
+  return {
+    done: '工作流已结束。',
+    why: '当前链路已停止。',
+    next: '可重新生成计划或继续处理未完成步骤。',
+  };
+};
+
+const buildNextAction = ({status, workflowRun, workflowState, actionResults}) => {
+  if (status === 'pending_confirm') {
+    const pending = actionResults.find(item => item.status === 'pending_confirm');
+    return {
+      type: 'confirm',
+      label: '确认并继续执行',
+      actionId: pending?.action?.actionId || '',
+      runId: workflowRun?.runId || '',
+    };
+  }
+  if (status === 'client_required') {
+    return {
+      type: 'provide_context',
+      label: '补齐上下文后继续',
+      targetTab:
+        workflowState?.nextRequiredContext === 'context.modeling.image'
+          ? 'model'
+          : workflowState?.nextRequiredContext === 'context.community.draftId'
+            ? 'community'
+            : 'create',
+      requiredContext: workflowState?.nextRequiredContext || undefined,
+      runId: workflowRun?.runId || '',
+    };
+  }
+  if (status === 'waiting_async_result') {
+    return {
+      type: 'wait_async',
+      label: '等待异步结果',
+      pollAfterMs: workflowRun?.pendingTask?.pollAfterMs || 5000,
+      nextPollAt: workflowRun?.nextPollAt || undefined,
+      runId: workflowRun?.runId || '',
+    };
+  }
+  if (status === 'failed') {
+    const failed = actionResults.find(item => item.status === 'failed');
+    return {
+      type: 'retry',
+      label: '重试失败步骤',
+      actionId: failed?.action?.actionId || '',
+      runId: workflowRun?.runId || '',
+    };
+  }
+  if (status === 'applied') {
+    return {
+      type: 'resume',
+      label: '查看执行详情',
+      runId: workflowRun?.runId || '',
+    };
+  }
+  return undefined;
+};
+
+const buildExecutePayload = ({
+  runId,
+  executionId,
+  planId,
+  namespace,
+  actions,
+  actionResults,
+  toolCalls,
+  auditId,
+  traceId,
+  pageSummary,
+  clientHandledActions,
+  appliedStrategy,
+  outcomeRecorded,
+}) => {
+  const appliedActions = actionResults
+    .filter(item => item.status === 'applied')
+    .map(item => item.action);
+  const pendingActions = actionResults
+    .filter(item => item.status === 'pending_confirm')
+    .map(item => item.action);
+  const failedActions = actionResults
+    .filter(item => item.status === 'failed')
+    .map(item => ({
+      action: item.action,
+      reason: item.message || 'execution_failed',
+      errorCode: item.errorCode || 'tool_error',
+      retryable: Boolean(item.retryable),
+    }));
+  const clientRequiredActions = actionResults
+    .filter(item => item.status === 'client_required')
+    .map(item => item.action);
+  const status = resolveExecutionStatus(actionResults);
+  const workflowState = buildWorkflowState({
+    actions,
+    actionResults,
+    status,
+  });
+  const workflowRun = buildWorkflowRunSnapshot({
+    runId,
+    workflowState,
+    status,
+    actionResults,
+  });
+  const normalizedToolCalls = Array.isArray(toolCalls) && toolCalls.length > 0 ? toolCalls : buildToolCalls(actionResults);
+  const resultCards = buildResultCards(actionResults);
+  const completionScore = calculateCompletionScore(actionResults);
+  const resultSummary = buildResultSummary({status, actionResults, workflowState});
+  const nextAction = buildNextAction({status, workflowRun, workflowState, actionResults});
+  const recoverySuggestions = buildRecoverySuggestions({status, workflowState, actionResults, runId});
+
+  return {
+    executionId,
+    planId,
+    namespace,
+    auditId,
+    traceId,
+    actionResults,
+    appliedActions,
+    failedActions,
+    pendingActions,
+    clientRequiredActions,
+    rollbackAvailable: appliedActions.length > 0,
+    workflowState,
+    workflowRun,
+    toolCalls: normalizedToolCalls,
+    resultCards,
+    completionScore,
+    recoverySuggestions,
+    resultSummary,
+    nextAction,
+    appliedStrategy: appliedStrategy || undefined,
+    outcomeRecorded: Boolean(outcomeRecorded),
+    clientHandledActions: Array.isArray(clientHandledActions) ? clientHandledActions : [],
+    pageSummary: pageSummary || undefined,
+    status,
   };
 };
 
@@ -456,6 +844,7 @@ const createAgentExecutionService = ({
     allowConfirmActions = false,
     grantedScopes = [],
     debugOverride = false,
+    executionStrategy = undefined,
   }) => {
     cleanupIdempotency();
     const dedupeKey = idempotencyKey ? `${userId || 'anonymous'}::${namespace}::${planId}::${idempotencyKey}` : '';
@@ -584,50 +973,16 @@ const createAgentExecutionService = ({
       }
     }
 
-    const appliedActions = actionResults
-      .filter(item => item.status === 'applied')
-      .map(item => item.action);
-    const pendingActions = actionResults
-      .filter(item => item.status === 'pending_confirm')
-      .map(item => item.action);
-    const failedActions = actionResults
-      .filter(item => item.status === 'failed')
-      .map(item => ({
-        action: item.action,
-        reason: item.message || 'execution_failed',
-        errorCode: item.errorCode || 'tool_error',
-        retryable: Boolean(item.retryable),
-      }));
-    const clientRequiredActions = actionResults
-      .filter(item => item.status === 'client_required')
-      .map(item => item.action);
-    const status =
-      pendingActions.length > 0
-        ? 'pending_confirm'
-        : failedActions.length > 0
-          ? 'failed'
-          : clientRequiredActions.length > 0
-            ? 'client_required'
-            : 'applied';
-    const workflowState = buildWorkflowState({
-      actions: filtered,
-      actionResults,
-      status,
-    });
-
-    const payload = {
+    const payload = buildExecutePayload({
+      runId: `run_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
       executionId: `${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
       planId,
       namespace,
+      actions: filtered,
       actionResults,
-      appliedActions,
-      failedActions,
-      pendingActions,
-      clientRequiredActions,
-      rollbackAvailable: appliedActions.length > 0,
-      workflowState,
-      status,
-    };
+      appliedStrategy: executionStrategy,
+      outcomeRecorded: true,
+    });
     if (dedupeKey) {
       idempotencyMap.set(dedupeKey, {
         payload,
@@ -645,4 +1000,8 @@ const createAgentExecutionService = ({
 module.exports = {
   createAgentExecutionService,
   AgentExecutionError,
+  buildWorkflowState,
+  buildWorkflowRunSnapshot,
+  buildExecutePayload,
+  resolveExecutionStatus,
 };

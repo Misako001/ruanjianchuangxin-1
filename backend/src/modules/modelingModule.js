@@ -47,11 +47,23 @@ const capabilities = providerName => ({
 
 const createModelingModule = async () => {
   assertTripoStrictMode();
-  await runTripoPrecheck({
-    baseUrl: process.env.TRIPO_BASE_URL,
-    apiKey: process.env.TRIPO_SECRET_KEY || process.env.TRIPO_API_KEY,
-    timeoutMs: Number(process.env.TRIPO_PRECHECK_TIMEOUT_MS || 8000),
-  });
+  let degradedStartupReason = '';
+  try {
+    await runTripoPrecheck({
+      baseUrl: process.env.TRIPO_BASE_URL,
+      apiKey: process.env.TRIPO_SECRET_KEY || process.env.TRIPO_API_KEY,
+      timeoutMs: Number(process.env.TRIPO_PRECHECK_TIMEOUT_MS || 8000),
+    });
+  } catch (error) {
+    degradedStartupReason = String(error?.message || 'TRIPO_PRECHECK_FAILED');
+    console.warn(
+      '[modeling-module] startup degraded',
+      JSON.stringify({
+        provider: 'tripo',
+        reason: degradedStartupReason,
+      }),
+    );
+  }
 
   const {createImageTo3DModule} = require('../imageTo3d/module');
   const imageTo3DModule = createImageTo3DModule({
@@ -69,11 +81,12 @@ const createModelingModule = async () => {
   router.get(`${BASE_PATH}/health`, (_req, res) => {
     res.json({
       module: MODULE_NAME,
-      ok: true,
+      ok: !degradedStartupReason,
       strictMode: true,
       provider: imageTo3DModule.provider?.name || 'tripo',
       databasePath: imageTo3DModule.config?.databasePath || '',
       pollAfterMs: imageTo3DModule.config?.pollAfterMs || 5000,
+      degradedStartupReason: degradedStartupReason || undefined,
     });
   });
 
@@ -88,10 +101,11 @@ const createModelingModule = async () => {
     async healthCheck() {
       return {
         module: MODULE_NAME,
-        ok: true,
+        ok: !degradedStartupReason,
         strictMode: true,
         provider: imageTo3DModule.provider?.name || 'tripo',
         databasePath: imageTo3DModule.config?.databasePath || '',
+        degradedStartupReason: degradedStartupReason || undefined,
       };
     },
     capabilities: () => capabilities(imageTo3DModule.provider?.name || 'tripo'),

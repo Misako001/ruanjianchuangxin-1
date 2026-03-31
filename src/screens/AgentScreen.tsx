@@ -12,6 +12,7 @@ import {
   agentApi,
   formatApiErrorMessage,
   type AgentExecuteResponse,
+  type AgentModuleHealthResponse,
   type AgentPlanResponse,
   type ModuleCapabilityItem,
 } from '../modules/api';
@@ -22,18 +23,25 @@ import {HERO_AGENT} from '../assets/design';
 import {canvasText, canvasUi, cardSurfaceViolet, glassShadow} from '../theme/canvasDesign';
 import {useAgentExecutionContextStore} from '../agent/executionContextStore';
 import {
+  buildExecuteStatusPresentation,
   buildCurrentPageSummary,
   buildMissingContextHintText,
+  cancelPendingAgentWorkflow,
   executeAgentPlanCycle,
+  resumePendingAgentWorkflow,
   runAgentGoalCycle,
   toActionStatusText,
   toResultStatusText,
+  toWorkflowRunStatusText,
   type AgentClientTab,
   type AgentExecuteCycleResult,
+  type AgentExecutionStrategy,
   type MissingContextGuide,
 } from '../agent/dualEntryOrchestrator';
 import {useAgentVoiceGoal} from '../agent/useAgentVoiceGoal';
 import {semanticColors} from '../theme/tokens';
+import {useAgentWorkflowContinuationStore} from '../agent/workflowContinuationStore';
+import {requestAgentLogin} from '../agent/authPromptStore';
 
 const QUICK_PROMPTS: Array<{
   icon: string;
@@ -57,6 +65,17 @@ const QUICK_PROMPTS: Array<{
   },
 ];
 
+const STRATEGY_OPTIONS: Array<{
+  value: AgentExecutionStrategy;
+  label: string;
+  description: string;
+}> = [
+  {value: 'adaptive', label: '自适应', description: '系统自动平衡速度与质量'},
+  {value: 'fast', label: '快速', description: '优先更快给出可执行结果'},
+  {value: 'quality', label: '质量', description: '优先规划更完整的链路'},
+  {value: 'cost', label: '成本', description: '优先轻量、可降级执行'},
+];
+
 interface AgentScreenProps {
   capabilities: ModuleCapabilityItem[];
   activeTab: AgentClientTab;
@@ -65,6 +84,12 @@ interface AgentScreenProps {
 
 const toJumpButtonText = (guide: MissingContextGuide): string =>
   guide.targetTab === 'model' ? '去建模页补图' : '去调色页补图';
+
+const isAgentAuthError = (error: unknown): boolean => {
+  const code = String((error as {code?: unknown})?.code || '').trim().toLowerCase();
+  const message = String((error as Error)?.message || '').trim().toLowerCase();
+  return code === 'http_401' || code === 'unauthorized' || message.includes('unauthorized');
+};
 
 export const AgentScreen: React.FC<AgentScreenProps> = ({
   capabilities,
@@ -78,20 +103,75 @@ export const AgentScreen: React.FC<AgentScreenProps> = ({
   const [loadingExecute, setLoadingExecute] = useState(false);
   const [errorText, setErrorText] = useState('');
   const [missingContextGuides, setMissingContextGuides] = useState<MissingContextGuide[]>([]);
+  const [executionStrategy, setExecutionStrategy] = useState<AgentExecutionStrategy>('adaptive');
+  const [agentHealth, setAgentHealth] = useState<AgentModuleHealthResponse | null>(null);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [runHistory, setRunHistory] = useState<Array<{id: string; type: string; status: string; message: string; createdAt: string}>>([]);
   const colorContext = useAgentExecutionContextStore(state => state.colorContext);
   const modelingImageContext = useAgentExecutionContextStore(
     state => state.modelingImageContext,
   );
+  const pendingWorkflow = useAgentWorkflowContinuationStore(state => state.pendingWorkflow);
+  const persistedRunRef = useAgentWorkflowContinuationStore(state => state.persistedRunRef);
   const busy = loadingPlan || loadingExecute;
 
   const agentCapability = capabilities.find(item => item.module === 'agent');
+
+  useEffect(() => {
+    let cancelled = false;
+    agentApi
+      .getAgentHealth()
+      .then(result => {
+        if (!cancelled) {
+          setAgentHealth(result);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAgentHealth(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!persistedRunRef?.runId) {
+      setRunHistory([]);
+      return;
+    }
+    let cancelled = false;
+    setHistoryLoading(true);
+    agentApi
+      .getWorkflowRunHistory(persistedRunRef.runId)
+      .then(result => {
+        if (!cancelled) {
+          setRunHistory(result.history || []);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setRunHistory([]);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setHistoryLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [persistedRunRef?.runId]);
 
   const planStatusText = useMemo(() => {
     if (!plan) {
       return '等待生成计划';
     }
     const plannerSourceText = plan.plannerSource === 'cloud' ? '云端规划' : '本地规划';
-    return `${plan.estimatedSteps} 步 · ${plannerSourceText}`;
+    const strategyText = plan.executionStrategy ? ` · 策略 ${plan.executionStrategy}` : '';
+    return `${plan.estimatedSteps} 步 · ${plannerSourceText}${strategyText}`;
   }, [plan]);
 
   const executeProgress = useMemo(() => {
@@ -144,6 +224,20 @@ export const AgentScreen: React.FC<AgentScreenProps> = ({
     }
     return '';
   }, [executeResult]);
+
+  const statusPresentation = useMemo(
+    () => (executeResult ? buildExecuteStatusPresentation(executeResult) : null),
+    [executeResult],
+  );
+
+  const latestRunStatusText = useMemo(() => {
+    const status =
+      executeResult?.workflowRun?.status ||
+      pendingWorkflow?.workflowRun?.status ||
+      persistedRunRef?.status ||
+      null;
+    return toWorkflowRunStatusText(status);
+  }, [executeResult?.workflowRun?.status, pendingWorkflow?.workflowRun?.status, persistedRunRef?.status]);
 
   const toRiskText = (riskLevel: string): string => {
     switch (riskLevel) {
@@ -221,11 +315,15 @@ export const AgentScreen: React.FC<AgentScreenProps> = ({
           },
           options: {
             inputSource,
+            executionStrategy,
           },
         });
         setPlan({...nextPlan, actions: cycle.hydratedActions});
         applyCycleResult(cycle);
       } catch (error) {
+        if (isAgentAuthError(error)) {
+          void requestAgentLogin('Agent 执行需要登录。登录后可以继续当前工作流。');
+        }
         setErrorText(formatApiErrorMessage(error, '执行失败'));
       } finally {
         setLoadingPlan(false);
@@ -239,6 +337,7 @@ export const AgentScreen: React.FC<AgentScreenProps> = ({
       executeResult,
       modelingImageContext,
       onNavigateTab,
+      executionStrategy,
     ],
   );
 
@@ -274,9 +373,17 @@ export const AgentScreen: React.FC<AgentScreenProps> = ({
       setErrorText('');
       setExecuteResult(null);
       setMissingContextGuides([]);
-      const nextPlan = await agentApi.createPlan(prompt.trim(), activeTab, 'text');
+      const nextPlan = await agentApi.createPlan(
+        prompt.trim(),
+        activeTab,
+        'text',
+        executionStrategy === 'adaptive' ? undefined : executionStrategy,
+      );
       setPlan(nextPlan);
     } catch (error) {
+      if (isAgentAuthError(error)) {
+        void requestAgentLogin('Agent 计划执行需要登录。登录后可以继续当前工作流。');
+      }
       setErrorText(formatApiErrorMessage(error, '计划生成失败'));
     } finally {
       setLoadingPlan(false);
@@ -322,11 +429,76 @@ export const AgentScreen: React.FC<AgentScreenProps> = ({
         options: {
           actionIds: pendingActionIds.length ? pendingActionIds : undefined,
           allowConfirmActions: pendingActionIds.length > 0,
+          executionStrategy,
         },
       });
       applyCycleResult(cycle);
     } catch (error) {
+      if (isAgentAuthError(error)) {
+        void requestAgentLogin('Agent 计划执行需要登录。登录后可以继续当前工作流。');
+      }
       setErrorText(formatApiErrorMessage(error, '计划执行失败'));
+    } finally {
+      setLoadingExecute(false);
+    }
+  };
+
+  const resumeWorkflow = async () => {
+    try {
+      setLoadingExecute(true);
+      setErrorText('');
+      const cycle = await resumePendingAgentWorkflow({
+        context: {
+          currentTab: activeTab,
+          colorContext,
+          modelingImageContext,
+          latestExecuteResult: executeResult,
+        },
+        clientHandlers: {
+          navigateToTab: tab => {
+            setTimeout(() => onNavigateTab(tab), 0);
+          },
+          summarizeCurrentPage: () =>
+            buildCurrentPageSummary({
+              currentTab: activeTab,
+              colorContext,
+              modelingImageContext,
+              latestPlan: plan,
+              latestExecuteResult: executeResult,
+            }),
+        },
+        options: {
+          allowConfirmActions: true,
+        },
+      });
+      if (!cycle) {
+        setErrorText('当前没有可恢复的工作流');
+        return;
+      }
+      if (cycle.hydratedActions.length > 0) {
+        setPlan(prev => (prev ? {...prev, actions: cycle.hydratedActions} : prev));
+      }
+      applyCycleResult(cycle);
+    } catch (error) {
+      if (isAgentAuthError(error)) {
+        void requestAgentLogin('恢复 Agent 工作流需要登录。登录后可以继续当前工作流。');
+      }
+      setErrorText(formatApiErrorMessage(error, '恢复执行失败'));
+    } finally {
+      setLoadingExecute(false);
+    }
+  };
+
+  const cancelWorkflow = async () => {
+    try {
+      setLoadingExecute(true);
+      const result = await cancelPendingAgentWorkflow();
+      if (result) {
+        setExecuteResult(result);
+      }
+      setErrorText('');
+    } catch (error) {
+      setErrorText(formatApiErrorMessage(error, '取消执行失败'));
     } finally {
       setLoadingExecute(false);
     }
@@ -375,6 +547,30 @@ export const AgentScreen: React.FC<AgentScreenProps> = ({
             </Pressable>
           ))}
         </ScrollView>
+        <View style={styles.strategyWrap}>
+          <Text style={styles.metaLabel}>执行策略</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.strategyRow}>
+            {STRATEGY_OPTIONS.map(item => {
+              const active = executionStrategy === item.value;
+              return (
+                <Pressable
+                  key={item.value}
+                  style={[styles.strategyChip, active && styles.strategyChipActive]}
+                  onPress={() => setExecutionStrategy(item.value)}>
+                  <Text style={[styles.strategyChipTitle, active && styles.strategyChipTitleActive]}>
+                    {item.label}
+                  </Text>
+                  <Text style={[styles.strategyChipDesc, active && styles.strategyChipDescActive]}>
+                    {item.description}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        </View>
         <TextInput
           value={prompt}
           onChangeText={setPrompt}
@@ -425,6 +621,32 @@ export const AgentScreen: React.FC<AgentScreenProps> = ({
           语音阶段: {toVoicePhaseText(voicePhase)}
           {liveTranscript ? ` | ${liveTranscript}` : ''}
         </Text>
+        <Text style={styles.metaText}>
+          健康度: planner {agentHealth?.plannerSource || 'hybrid'} | strategy{' '}
+          {plan?.strategySource || agentHealth?.strategySource || 'adaptive'} | strictMode{' '}
+          {agentCapability?.strictMode ? 'on' : 'unknown'}
+        </Text>
+        <Text style={styles.metaText}>
+          auth {agentCapability?.auth?.required ? 'required' : 'open'} | workflow {latestRunStatusText}
+        </Text>
+        {pendingWorkflow || persistedRunRef ? (
+          <View style={styles.actionRow}>
+            <PrimaryButton
+              label={loadingExecute ? '恢复中...' : '恢复续跑'}
+              onPress={resumeWorkflow}
+              disabled={loadingExecute}
+              variant="secondary"
+              icon={<Icon name="refresh-outline" size={15} color={semanticColors.text.primary} />}
+            />
+            <PrimaryButton
+              label="取消续跑"
+              onPress={cancelWorkflow}
+              disabled={loadingExecute}
+              variant="secondary"
+              icon={<Icon name="close-circle-outline" size={15} color={semanticColors.text.primary} />}
+            />
+          </View>
+        ) : null}
       </GlassCard>
 
       <GlassCard style={styles.card}>
@@ -464,6 +686,37 @@ export const AgentScreen: React.FC<AgentScreenProps> = ({
       <GlassCard style={styles.card}>
         <View style={styles.sectionHead}>
           <View style={styles.sectionIconBadge}>
+            <Icon name="time" size={13} color="#A34A3C" />
+          </View>
+          <Text style={styles.sectionTitle}>运行历史</Text>
+        </View>
+        <Text style={styles.metaText}>
+          最近 run: {persistedRunRef?.runId || pendingWorkflow?.workflowRun?.runId || '-'}
+        </Text>
+        <Text style={styles.metaText}>
+          状态: {latestRunStatusText}
+          {historyLoading ? ' · 加载中' : ''}
+        </Text>
+        {runHistory.length ? (
+          <View style={styles.timelineWrap}>
+            {runHistory.slice(-4).reverse().map(item => (
+              <View key={item.id} style={styles.stepCard}>
+                <Text style={styles.stepDomain}>
+                  {item.type} · {item.status || '-'}
+                </Text>
+                <Text style={styles.stepMeta}>{item.message || '-'}</Text>
+                <Text style={styles.stepMeta}>{item.createdAt}</Text>
+              </View>
+            ))}
+          </View>
+        ) : (
+          <Text style={styles.metaText}>暂无持久化运行历史，执行后会展示续跑轨迹。</Text>
+        )}
+      </GlassCard>
+
+      <GlassCard style={styles.card}>
+        <View style={styles.sectionHead}>
+          <View style={styles.sectionIconBadge}>
             <Icon name="checkmark-done" size={13} color="#A34A3C" />
           </View>
           <Text style={styles.sectionTitle}>执行结果</Text>
@@ -479,7 +732,14 @@ export const AgentScreen: React.FC<AgentScreenProps> = ({
         {executeResult ? (
           <View style={styles.timelineWrap}>
             <Text style={styles.metaText}>状态: {toResultStatusText(executeResult.status)}</Text>
+            {executeResult.workflowRun ? (
+              <Text style={styles.metaText}>
+                运行态: {toWorkflowRunStatusText(executeResult.workflowRun.status)} · runId{' '}
+                {executeResult.workflowRun.runId}
+              </Text>
+            ) : null}
             {resultSummaryText ? <Text style={styles.metaText}>{resultSummaryText}</Text> : null}
+            {statusPresentation ? <Text style={styles.metaText}>{statusPresentation.statusLine}</Text> : null}
             {workflowProgressText ? (
               <Text style={styles.metaText}>链路进度: {workflowProgressText}</Text>
             ) : null}
@@ -488,10 +748,61 @@ export const AgentScreen: React.FC<AgentScreenProps> = ({
                 下一步需要: {toContextLabel(executeResult.workflowState.nextRequiredContext)}
               </Text>
             ) : null}
+            {executeResult.resultSummary ? (
+              <View style={styles.stepCard}>
+                <Text style={styles.stepDomain}>结果摘要</Text>
+                <Text style={styles.stepMeta}>{executeResult.resultSummary.done}</Text>
+                <Text style={styles.stepMeta}>{executeResult.resultSummary.why}</Text>
+                <Text style={styles.stepMeta}>{executeResult.resultSummary.next}</Text>
+              </View>
+            ) : null}
+            {executeResult.nextAction ? (
+              <View style={styles.stepCard}>
+                <Text style={styles.stepDomain}>下一步建议</Text>
+                <Text style={styles.stepMeta}>
+                  {executeResult.nextAction.label}
+                  {executeResult.nextAction.requiredContext
+                    ? ` · ${executeResult.nextAction.requiredContext}`
+                    : ''}
+                </Text>
+              </View>
+            ) : null}
             {executeResult.clientHandledActions?.length ? (
               <Text style={styles.metaText}>
                 客户端补执行: {executeResult.clientHandledActions.length} 项
               </Text>
+            ) : null}
+            {executeResult.resultCards?.length ? (
+              <View style={styles.timelineWrap}>
+                <Text style={styles.metaLabel}>结果卡片</Text>
+                {executeResult.resultCards.map((card, index) => (
+                  <View key={`${card.kind}_${index}`} style={styles.stepCard}>
+                    <Text style={styles.stepDomain}>
+                      {card.title} · {card.status}
+                    </Text>
+                    <Text style={styles.stepMeta}>{card.summary}</Text>
+                    {card.nextAction?.label ? (
+                      <Text style={styles.stepMeta}>建议: {String(card.nextAction.label)}</Text>
+                    ) : null}
+                  </View>
+                ))}
+              </View>
+            ) : null}
+            {executeResult.toolCalls?.length ? (
+              <View style={styles.timelineWrap}>
+                <Text style={styles.metaLabel}>工具调用摘要</Text>
+                {executeResult.toolCalls.slice(0, 4).map(item => (
+                  <View key={`${item.actionId}_${item.requestId}`} style={styles.stepCard}>
+                    <Text style={styles.stepDomain}>
+                      {item.toolName} · {item.status}
+                    </Text>
+                    <Text style={styles.stepMeta}>
+                      server {item.serverId} · {item.latencyMs}ms
+                      {item.errorCode ? ` · ${item.errorCode}` : ''}
+                    </Text>
+                  </View>
+                ))}
+              </View>
             ) : null}
             {executeResult.pageSummary ? (
               <View style={styles.stepCard}>
@@ -531,7 +842,9 @@ export const AgentScreen: React.FC<AgentScreenProps> = ({
         ) : null}
         <Text style={styles.metaText}>
           严格模式: {agentCapability?.strictMode ? '开启' : '未知'} | 认证:{' '}
-          {agentCapability?.auth?.required ? 'JWT' : '无'}
+          {agentCapability?.auth?.required ? 'JWT' : '无'} | plannerSource{' '}
+          {plan?.plannerSource || agentHealth?.plannerSource || '-'} | strategySource{' '}
+          {plan?.strategySource || agentHealth?.strategySource || '-'}
         </Text>
       </GlassCard>
     </ScrollView>
@@ -585,6 +898,41 @@ const styles = StyleSheet.create({
   quickChipText: {
     ...canvasText.bodyStrong,
     color: '#2F2926',
+  },
+  strategyWrap: {
+    gap: 8,
+  },
+  strategyRow: {
+    gap: 8,
+    paddingRight: 12,
+  },
+  strategyChip: {
+    minWidth: 120,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: 'rgba(255,255,255,0.48)',
+    borderWidth: 1,
+    borderColor: 'rgba(163,74,60,0.12)',
+    gap: 4,
+  },
+  strategyChipActive: {
+    backgroundColor: 'rgba(163,74,60,0.14)',
+    borderColor: 'rgba(163,74,60,0.28)',
+  },
+  strategyChipTitle: {
+    ...canvasText.bodyStrong,
+    color: '#2F2926',
+  },
+  strategyChipTitleActive: {
+    color: '#8D3F33',
+  },
+  strategyChipDesc: {
+    ...canvasText.caption,
+    color: 'rgba(110,90,80,0.82)',
+  },
+  strategyChipDescActive: {
+    color: '#8D3F33',
   },
   actionRow: {
     flexDirection: 'row',
@@ -698,6 +1046,10 @@ const styles = StyleSheet.create({
     ...canvasText.body,
     color: 'rgba(110,90,80,0.82)',
     lineHeight: 18,
+  },
+  metaLabel: {
+    ...canvasText.caption,
+    color: '#A34A3C',
   },
   errorText: {
     ...canvasText.body,

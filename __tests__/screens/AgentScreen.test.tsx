@@ -51,6 +51,8 @@ jest.mock('../../src/modules/api', () => ({
   agentApi: {
     createPlan: jest.fn(),
     executePlan: jest.fn(),
+    getAgentHealth: jest.fn(),
+    getWorkflowRunHistory: jest.fn(),
   },
   formatApiErrorMessage: jest.fn((error: unknown, fallback: string) => {
     if (error instanceof Error && error.message) {
@@ -64,6 +66,8 @@ const {agentApi} = jest.requireMock('../../src/modules/api') as {
   agentApi: {
     createPlan: jest.Mock;
     executePlan: jest.Mock;
+    getAgentHealth: jest.Mock;
+    getWorkflowRunHistory: jest.Mock;
   };
 };
 
@@ -152,12 +156,29 @@ describe('AgentScreen action args injection', () => {
   beforeEach(() => {
     agentApi.createPlan.mockReset();
     agentApi.executePlan.mockReset();
+    agentApi.getAgentHealth.mockReset();
+    agentApi.getWorkflowRunHistory.mockReset();
     agentApi.createPlan.mockResolvedValue(basePlan);
     agentApi.executePlan.mockResolvedValue({
       executionId: 'exec-1',
       planId: 'plan-agent-1',
       status: 'applied',
       actionResults: [],
+    });
+    agentApi.getAgentHealth.mockResolvedValue({
+      module: 'agent',
+      ok: true,
+      strictMode: true,
+      plannerSource: 'hybrid',
+      strategySource: 'adaptive',
+      metrics: {},
+    });
+    agentApi.getWorkflowRunHistory.mockResolvedValue({
+      ok: true,
+      runId: 'run-1',
+      planId: 'plan-agent-1',
+      history: [],
+      latestExecuteResult: null,
     });
     useAgentExecutionContextStore.setState({
       colorContext: null,

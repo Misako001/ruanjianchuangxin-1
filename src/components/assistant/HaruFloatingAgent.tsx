@@ -25,6 +25,7 @@ import type {
 import {useAgentExecutionContextStore} from '../../agent/executionContextStore';
 import {useAppStore} from '../../store/appStore';
 import {
+  agentApi,
   formatApiErrorMessage,
   type AgentExecuteResponse,
   type AgentPlanAction,
@@ -32,15 +33,22 @@ import {
   type ModuleCapabilityItem,
 } from '../../modules/api';
 import {
+  buildExecuteStatusPresentation,
   buildCurrentPageSummary,
   buildMissingContextHintText,
+  cancelPendingAgentWorkflow,
   executeAgentPlanCycle,
+  resumePendingAgentWorkflow,
   runAgentGoalCycle,
   toResultStatusText,
+  toWorkflowRunStatusText,
   type AgentClientTab,
+  type AgentExecutionStrategy,
   type MissingContextGuide,
 } from '../../agent/dualEntryOrchestrator';
 import {useAgentVoiceGoal} from '../../agent/useAgentVoiceGoal';
+import {useAgentWorkflowContinuationStore} from '../../agent/workflowContinuationStore';
+import {requestAgentLogin} from '../../agent/authPromptStore';
 
 const COLLAPSED_SIZE = 64;
 const PANEL_BOTTOM_OFFSET = 92;
@@ -71,6 +79,16 @@ const PANEL_CONFIG: AssistantPanelVisualConfig = {
   },
 };
 
+const AGENT_STRATEGY_OPTIONS: Array<{
+  value: AgentExecutionStrategy;
+  label: string;
+}> = [
+  {value: 'adaptive', label: '自适应'},
+  {value: 'fast', label: '快速'},
+  {value: 'quality', label: '质量'},
+  {value: 'cost', label: '成本'},
+];
+
 const mapTabToScenePage = (tab: FloatingAssistantTab): AssistantScenePage => {
   if (tab === 'create') {
     return 'editor';
@@ -83,6 +101,12 @@ const mapTabToScenePage = (tab: FloatingAssistantTab): AssistantScenePage => {
 
 const toContextJumpLabel = (guide: MissingContextGuide): string =>
   guide.targetTab === 'model' ? '去建模页补图' : '去调色页补图';
+
+const isAgentAuthError = (error: unknown): boolean => {
+  const code = String((error as {code?: unknown})?.code || '').trim().toLowerCase();
+  const message = String((error as Error)?.message || '').trim().toLowerCase();
+  return code === 'http_401' || code === 'unauthorized' || message.includes('unauthorized');
+};
 
 export const HaruFloatingAgent: React.FC<HaruFloatingAgentProps> = ({
   activeTab,
@@ -99,12 +123,18 @@ export const HaruFloatingAgent: React.FC<HaruFloatingAgentProps> = ({
   const panStartRef = useRef({x: 0, y: 0});
   const panelAnim = useRef(new Animated.Value(0)).current;
   const collapsedIdleAnim = useRef(new Animated.Value(0)).current;
-  const position = useRef(
-    new Animated.ValueXY({
+  const initialCollapsedPosition = useMemo(
+    () => ({
       x: Math.max(8, windowWidth - COLLAPSED_SIZE - 8),
       y: Math.max(90, windowHeight - bottomInset - 210),
     }),
+    [bottomInset, windowHeight, windowWidth],
+  );
+  const position = useRef(
+    new Animated.ValueXY(initialCollapsedPosition),
   ).current;
+  const collapsedPositionRef = useRef(initialCollapsedPosition);
+  const panelPositionRef = useRef(initialCollapsedPosition);
 
   const colorContext = useAgentExecutionContextStore(state => state.colorContext);
   const modelingImageContext = useAgentExecutionContextStore(state => state.modelingImageContext);
@@ -127,6 +157,9 @@ export const HaruFloatingAgent: React.FC<HaruFloatingAgentProps> = ({
   const [latestPlan, setLatestPlan] = useState<AgentPlanResponse | null>(null);
   const [latestExecuteResult, setLatestExecuteResult] = useState<AgentExecuteResponse | null>(null);
   const [latestHydratedActions, setLatestHydratedActions] = useState<AgentPlanAction[]>([]);
+  const [executionStrategy, setExecutionStrategy] = useState<AgentExecutionStrategy>('adaptive');
+  const [runHistory, setRunHistory] = useState<Array<{id: string; type: string; status: string; message: string}>>([]);
+  const [panelPosition, setPanelPosition] = useState(initialCollapsedPosition);
   const [chatMessages, setChatMessages] = useState<AssistantChatMessage[]>([
     {
       id: 'm0',
@@ -144,6 +177,8 @@ export const HaruFloatingAgent: React.FC<HaruFloatingAgentProps> = ({
         : [],
     [latestExecuteResult],
   );
+  const pendingWorkflow = useAgentWorkflowContinuationStore(state => state.pendingWorkflow);
+  const persistedRunRef = useAgentWorkflowContinuationStore(state => state.persistedRunRef);
 
   const {agentAvailable, agentAvailabilityKnown} = useMemo(() => {
     const agentCapability = capabilities.find(item => item.module === 'agent');
@@ -160,6 +195,29 @@ export const HaruFloatingAgent: React.FC<HaruFloatingAgentProps> = ({
     };
   }, [capabilities]);
 
+  useEffect(() => {
+    if (!persistedRunRef?.runId) {
+      setRunHistory([]);
+      return;
+    }
+    let cancelled = false;
+    agentApi
+      .getWorkflowRunHistory(persistedRunRef.runId)
+      .then(result => {
+        if (!cancelled) {
+          setRunHistory(result.history || []);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setRunHistory([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [persistedRunRef?.runId]);
+
   const pushChatMessage = useCallback((role: AssistantChatMessage['role'], text: string) => {
     const finalText = text.trim();
     if (!finalText) {
@@ -167,21 +225,6 @@ export const HaruFloatingAgent: React.FC<HaruFloatingAgentProps> = ({
     }
     messageIdRef.current += 1;
     setChatMessages(prev => [...prev, {id: `m${messageIdRef.current}`, role, text: finalText}]);
-  }, []);
-
-  const openHalfPanel = useCallback(() => {
-    setPanelMode('half');
-    setUiState(prev => reduceAssistantUiState(prev, 'user_open_half'));
-  }, []);
-
-  const openFullPanel = useCallback(() => {
-    setPanelMode('full');
-    setUiState(prev => reduceAssistantUiState(prev, 'user_open_full'));
-  }, []);
-
-  const closePanel = useCallback(() => {
-    setPanelMode('hidden');
-    setUiState(prev => reduceAssistantUiState(prev, 'user_close'));
   }, []);
 
   const hideBubble = useCallback(() => {
@@ -210,6 +253,93 @@ export const HaruFloatingAgent: React.FC<HaruFloatingAgentProps> = ({
     setCollapsedIdle(false);
     scheduleCollapsedIdle();
   }, [scheduleCollapsedIdle]);
+
+  const panelSizeStyle = useMemo(() => {
+    const availableHeight = Math.max(220, windowHeight - bottomInset - PANEL_BOTTOM_OFFSET - 68);
+    const widthCap = Math.max(252, Math.min(windowWidth - 24, 340));
+    if (panelMode === 'half') {
+      return {
+        width: Math.max(236, Math.min(widthCap - 18, Math.floor(windowWidth * 0.64))),
+        maxHeight: Math.min(Math.max(220, Math.floor(windowHeight * 0.38)), availableHeight),
+      };
+    }
+    return {
+      width: Math.max(272, widthCap),
+      maxHeight: Math.min(Math.max(300, Math.floor(windowHeight * 0.56)), availableHeight),
+    };
+  }, [bottomInset, panelMode, windowHeight, windowWidth]);
+
+  const clampCollapsedPosition = useCallback(
+    (next: {x: number; y: number}) => {
+      const margin = 8;
+      const minY = 70;
+      const maxX = Math.max(margin, windowWidth - COLLAPSED_SIZE - margin);
+      const maxY = Math.max(minY, windowHeight - bottomInset - 180);
+      return {
+        x: Math.min(maxX, Math.max(margin, next.x)),
+        y: Math.min(maxY, Math.max(minY, next.y)),
+      };
+    },
+    [bottomInset, windowHeight, windowWidth],
+  );
+
+  const clampPanelPosition = useCallback(
+    (next: {x: number; y: number}) => {
+      const margin = 12;
+      const panelWidth = Number(panelSizeStyle.width || 300);
+      const panelHeight = Number(panelSizeStyle.maxHeight || 360);
+      const maxX = Math.max(margin, windowWidth - panelWidth - margin);
+      const maxY = Math.max(56, windowHeight - bottomInset - panelHeight - margin);
+      return {
+        x: Math.min(maxX, Math.max(margin, next.x)),
+        y: Math.min(maxY, Math.max(56, next.y)),
+      };
+    },
+    [bottomInset, panelSizeStyle.maxHeight, panelSizeStyle.width, windowHeight, windowWidth],
+  );
+
+  const derivePanelPositionFromCollapsed = useCallback(
+    (anchor: {x: number; y: number}) => {
+      const panelWidth = Number(panelSizeStyle.width || 300);
+      const panelHeight = Number(panelSizeStyle.maxHeight || 360);
+      return clampPanelPosition({
+        x: anchor.x + COLLAPSED_SIZE - panelWidth,
+        y: anchor.y + COLLAPSED_SIZE - Math.min(panelHeight, 320),
+      });
+    },
+    [clampPanelPosition, panelSizeStyle.maxHeight, panelSizeStyle.width],
+  );
+
+  const syncPanelPosition = useCallback(
+    (nextMode: 'half' | 'full') => {
+      const nextPosition =
+        panelMode === 'hidden'
+          ? derivePanelPositionFromCollapsed(collapsedPositionRef.current)
+          : clampPanelPosition(panelPositionRef.current);
+      panelPositionRef.current = nextPosition;
+      setPanelPosition(nextPosition);
+      setPanelMode(nextMode);
+    },
+    [clampPanelPosition, derivePanelPositionFromCollapsed, panelMode],
+  );
+
+  const openHalfPanel = useCallback(() => {
+    syncPanelPosition('half');
+    setUiState(prev => reduceAssistantUiState(prev, 'user_open_half'));
+  }, [syncPanelPosition]);
+
+  const openFullPanel = useCallback(() => {
+    syncPanelPosition('full');
+    setUiState(prev => reduceAssistantUiState(prev, 'user_open_full'));
+  }, [syncPanelPosition]);
+
+  const closePanel = useCallback(() => {
+    const collapsedNext = clampCollapsedPosition(panelPositionRef.current);
+    collapsedPositionRef.current = collapsedNext;
+    position.setValue(collapsedNext);
+    setPanelMode('hidden');
+    setUiState(prev => reduceAssistantUiState(prev, 'user_close'));
+  }, [clampCollapsedPosition, position]);
 
   const runGoal = useCallback(
     async (
@@ -249,6 +379,7 @@ export const HaruFloatingAgent: React.FC<HaruFloatingAgentProps> = ({
             allowConfirmActions: options?.allowConfirm === true,
             actionIds: options?.actionIds,
             inputSource: options?.inputSource === 'voice' ? 'voice' : 'text',
+            executionStrategy,
           },
         });
         setLatestPlan(plan);
@@ -278,9 +409,10 @@ export const HaruFloatingAgent: React.FC<HaruFloatingAgentProps> = ({
 
         setUiState(prev => reduceAssistantUiState(prev, 'run_done'));
         let assistantReply = '';
+        const presentation = buildExecuteStatusPresentation(cycle.executeResult);
         if (cycle.executeResult.status === 'pending_confirm') {
-          setStatusText('已自动执行可用动作，存在待确认步骤。');
-          assistantReply = '我已自动执行可用动作，还剩待确认步骤，请在下方确认或取消。';
+          setStatusText(presentation.statusLine);
+          assistantReply = presentation.assistantReply;
           openFullPanel();
         } else if (cycle.executeResult.status === 'applied') {
           const handledCount = cycle.executeResult.clientHandledActions?.length || 0;
@@ -288,11 +420,11 @@ export const HaruFloatingAgent: React.FC<HaruFloatingAgentProps> = ({
             handledCount > 0 ? `执行完成（客户端补执行 ${handledCount} 项）。` : '执行完成。',
           );
           assistantReply = cycle.executeResult.pageSummary
-            ? `执行完成。当前页摘要：${cycle.executeResult.pageSummary}`
-            : '执行完成。';
+            ? `${presentation.assistantReply} 当前页摘要：${cycle.executeResult.pageSummary}`
+            : presentation.assistantReply;
         } else if (cycle.executeResult.status === 'client_required') {
-          setStatusText('已执行服务器动作，存在待客户端处理动作。');
-          assistantReply = '已完成服务器侧执行，客户端动作已尝试处理。';
+          setStatusText(presentation.statusLine);
+          assistantReply = presentation.assistantReply;
         } else {
           const firstMessage =
             cycle.executeResult.actionResults.find(item => item.status === 'failed')?.message ||
@@ -303,6 +435,9 @@ export const HaruFloatingAgent: React.FC<HaruFloatingAgentProps> = ({
         }
         pushChatMessage('assistant', assistantReply);
       } catch (error) {
+        if (isAgentAuthError(error)) {
+          void requestAgentLogin('Hiyori 需要登录后才能继续当前 Agent 工作流。');
+        }
         const message = formatApiErrorMessage(error, '执行失败');
         setErrorText(message);
         setUiState(prev => reduceAssistantUiState(prev, 'run_failed'));
@@ -320,6 +455,7 @@ export const HaruFloatingAgent: React.FC<HaruFloatingAgentProps> = ({
       onNavigateTab,
       openFullPanel,
       pushChatMessage,
+      executionStrategy,
     ],
   );
 
@@ -407,6 +543,7 @@ export const HaruFloatingAgent: React.FC<HaruFloatingAgentProps> = ({
         options: {
           allowConfirmActions: true,
           actionIds: pendingActionIds,
+          executionStrategy,
         },
       });
       if (cycle.missingContextGuides.length > 0) {
@@ -452,6 +589,7 @@ export const HaruFloatingAgent: React.FC<HaruFloatingAgentProps> = ({
     onNavigateTab,
     pendingActionIds,
     pushChatMessage,
+    executionStrategy,
   ]);
 
   const dismissPending = useCallback(() => {
@@ -476,6 +614,83 @@ export const HaruFloatingAgent: React.FC<HaruFloatingAgentProps> = ({
     );
   }, [pushChatMessage]);
 
+  const resumeWorkflow = useCallback(async () => {
+    try {
+      setLoading(true);
+      setErrorText('');
+      const cycle = await resumePendingAgentWorkflow({
+        context: {
+          currentTab: activeTab,
+          colorContext,
+          modelingImageContext,
+          latestExecuteResult,
+        },
+        clientHandlers: {
+          navigateToTab: onNavigateTab,
+          summarizeCurrentPage: () =>
+            buildCurrentPageSummary({
+              currentTab: activeTab,
+              colorContext,
+              modelingImageContext,
+              latestPlan,
+              latestExecuteResult,
+            }),
+        },
+        options: {
+          allowConfirmActions: true,
+        },
+      });
+      if (!cycle?.executeResult) {
+        setStatusText('当前没有可恢复的工作流。');
+        return;
+      }
+      setLatestHydratedActions(cycle.hydratedActions);
+      setLatestExecuteResult(cycle.executeResult);
+      setMissingContextGuides(cycle.missingContextGuides);
+      const presentation = buildExecuteStatusPresentation(cycle.executeResult);
+      setStatusText(presentation.statusLine);
+      pushChatMessage('assistant', presentation.assistantReply);
+    } catch (error) {
+      if (isAgentAuthError(error)) {
+        void requestAgentLogin('恢复 Agent 工作流需要登录。');
+      }
+      const message = formatApiErrorMessage(error, '恢复执行失败');
+      setErrorText(message);
+      pushChatMessage('assistant', message);
+    } finally {
+      setLoading(false);
+    }
+  }, [
+    activeTab,
+    colorContext,
+    latestExecuteResult,
+    latestPlan,
+    modelingImageContext,
+    onNavigateTab,
+    pushChatMessage,
+  ]);
+
+  const cancelWorkflow = useCallback(async () => {
+    try {
+      setLoading(true);
+      const result = await cancelPendingAgentWorkflow();
+      if (result) {
+        setLatestExecuteResult(result);
+        setStatusText('已取消当前续跑工作流。');
+        pushChatMessage('assistant', '已取消当前续跑工作流。');
+      }
+    } catch (error) {
+      if (isAgentAuthError(error)) {
+        void requestAgentLogin('取消 Agent 工作流需要登录。');
+      }
+      const message = formatApiErrorMessage(error, '取消执行失败');
+      setErrorText(message);
+      pushChatMessage('assistant', message);
+    } finally {
+      setLoading(false);
+    }
+  }, [pushChatMessage]);
+
   useEffect(() => {
     setUiState(prev => reduceAssistantUiState(prev, 'app_ready'));
   }, []);
@@ -492,9 +707,32 @@ export const HaruFloatingAgent: React.FC<HaruFloatingAgentProps> = ({
     Animated.timing(collapsedIdleAnim, {
       toValue: collapsedIdle ? 1 : 0,
       duration: 220,
-      useNativeDriver: true,
+      // Keep the collapsed bubble on the JS driver so drag/tap position updates
+      // never conflict with an earlier native-driven idle animation.
+      useNativeDriver: false,
     }).start();
   }, [collapsedIdle, collapsedIdleAnim]);
+
+  useEffect(() => {
+    const listenerId = position.addListener(value => {
+      collapsedPositionRef.current = clampCollapsedPosition({
+        x: Number(value.x || 0),
+        y: Number(value.y || 0),
+      });
+    });
+    return () => {
+      position.removeListener(listenerId);
+    };
+  }, [clampCollapsedPosition, position]);
+
+  useEffect(() => {
+    const nextCollapsed = clampCollapsedPosition(collapsedPositionRef.current);
+    collapsedPositionRef.current = nextCollapsed;
+    position.setValue(nextCollapsed);
+    const nextPanel = clampPanelPosition(panelPositionRef.current);
+    panelPositionRef.current = nextPanel;
+    setPanelPosition(nextPanel);
+  }, [clampCollapsedPosition, clampPanelPosition, position]);
 
   useEffect(() => {
     if (panelMode === 'hidden') {
@@ -579,43 +817,59 @@ export const HaruFloatingAgent: React.FC<HaruFloatingAgentProps> = ({
           });
         },
         onPanResponderRelease: (_, gestureState) => {
-          const margin = 8;
-          const minY = 70;
-          const maxY = Math.max(minY, windowHeight - bottomInset - 180);
-          const targetX =
-            panStartRef.current.x + gestureState.dx < windowWidth / 2
-              ? margin
-              : Math.max(margin, windowWidth - COLLAPSED_SIZE - margin);
-          const targetY = Math.min(maxY, Math.max(minY, panStartRef.current.y + gestureState.dy));
+          const releaseX = panStartRef.current.x + gestureState.dx;
+          const snappedX =
+            releaseX < windowWidth / 2
+              ? 8
+              : Math.max(8, windowWidth - COLLAPSED_SIZE - 8);
+          const nextCollapsed = clampCollapsedPosition({
+            x: snappedX,
+            y: panStartRef.current.y + gestureState.dy,
+          });
           Animated.spring(position, {
-            toValue: {x: targetX, y: targetY},
+            toValue: nextCollapsed,
             useNativeDriver: false,
             bounciness: 5,
           }).start();
           setUiState(prev => reduceAssistantUiState(prev, 'user_drag_end'));
         },
       }),
-    [bottomInset, markCollapsedActive, panelMode, position, windowHeight, windowWidth],
+    [clampCollapsedPosition, markCollapsedActive, panelMode, position, windowWidth],
   );
 
-  const panelSizeStyle = useMemo(() => {
-    const availableHeight = Math.max(220, windowHeight - bottomInset - PANEL_BOTTOM_OFFSET - 68);
-    const widthCap = Math.max(252, Math.min(windowWidth - 24, 340));
-    if (panelMode === 'half') {
-      return {
-        width: Math.max(236, Math.min(widthCap - 18, Math.floor(windowWidth * 0.64))),
-        maxHeight: Math.min(Math.max(220, Math.floor(windowHeight * 0.38)), availableHeight),
-      };
-    }
-    return {
-      width: Math.max(272, widthCap),
-      maxHeight: Math.min(Math.max(300, Math.floor(windowHeight * 0.56)), availableHeight),
-    };
-  }, [bottomInset, panelMode, windowHeight, windowWidth]);
+  const panelPanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_, gestureState) =>
+          panelMode !== 'hidden' &&
+          (Math.abs(gestureState.dx) > 4 || Math.abs(gestureState.dy) > 4),
+        onPanResponderGrant: () => {
+          panStartRef.current = {...panelPositionRef.current};
+        },
+        onPanResponderMove: (_, gestureState) => {
+          const next = clampPanelPosition({
+            x: panStartRef.current.x + gestureState.dx,
+            y: panStartRef.current.y + gestureState.dy,
+          });
+          panelPositionRef.current = next;
+          setPanelPosition(next);
+        },
+        onPanResponderRelease: (_, gestureState) => {
+          const next = clampPanelPosition({
+            x: panStartRef.current.x + gestureState.dx,
+            y: panStartRef.current.y + gestureState.dy,
+          });
+          panelPositionRef.current = next;
+          setPanelPosition(next);
+          collapsedPositionRef.current = clampCollapsedPosition(next);
+        },
+      }),
+    [clampCollapsedPosition, clampPanelPosition, panelMode],
+  );
 
   const chatListModeStyle = useMemo(
     () => ({
-      maxHeight:
+      height:
         panelMode === 'half'
           ? Math.max(92, Math.floor(windowHeight * 0.18))
           : Math.max(150, Math.floor(windowHeight * 0.32)),
@@ -746,6 +1000,15 @@ export const HaruFloatingAgent: React.FC<HaruFloatingAgentProps> = ({
     return `链路进度 ${Math.min(Math.max(current, 0), total)}/${total}`;
   }, [latestExecuteResult]);
 
+  const latestRunStatusText = useMemo(() => {
+    const status =
+      latestExecuteResult?.workflowRun?.status ||
+      pendingWorkflow?.workflowRun?.status ||
+      persistedRunRef?.status ||
+      null;
+    return toWorkflowRunStatusText(status);
+  }, [latestExecuteResult?.workflowRun?.status, pendingWorkflow?.workflowRun?.status, persistedRunRef?.status]);
+
   const combinedResultText = useMemo(() => {
     if (!latestExecuteResult) {
       return '';
@@ -817,10 +1080,10 @@ export const HaruFloatingAgent: React.FC<HaruFloatingAgentProps> = ({
         <Animated.View
           style={[
             styles.panelWrap,
-            styles.panelAnchor,
             panelSizeStyle,
             {
-              bottom: bottomInset + PANEL_BOTTOM_OFFSET,
+              left: panelPosition.x,
+              top: panelPosition.y,
               opacity: panelAnim,
               transform: [
                 {
@@ -832,7 +1095,8 @@ export const HaruFloatingAgent: React.FC<HaruFloatingAgentProps> = ({
               ],
             },
           ]}>
-          <View style={styles.panelHeader}>
+          <View pointerEvents="none" style={styles.panelSolidBackdrop} />
+          <View style={styles.panelHeader} {...panelPanResponder.panHandlers}>
             <Text style={styles.panelTitle}>Hiyori 对话助手</Text>
             <View style={styles.panelHeaderActions}>
               {panelMode === 'half' ? (
@@ -848,12 +1112,17 @@ export const HaruFloatingAgent: React.FC<HaruFloatingAgentProps> = ({
           <View
             style={[
               styles.panelBody,
-              PANEL_CONFIG.expandedLayout?.avatarAnchor === 'top' ? styles.panelBodyTop : styles.panelBodyLeft,
+              panelMode === 'half'
+                ? styles.panelBodyTop
+                : PANEL_CONFIG.expandedLayout?.avatarAnchor === 'top'
+                  ? styles.panelBodyTop
+                  : styles.panelBodyLeft,
             ]}>
             <View
               style={[
                 styles.panelAvatarArea,
                 panelMode === 'half' ? styles.panelAvatarAreaCompact : null,
+                panelMode === 'half' ? styles.panelAvatarAreaStacked : null,
                 panelMode === 'full'
                   ? {flex: Math.max(0.28, PANEL_CONFIG.expandedLayout?.avatarRatio || 0.32)}
                   : null,
@@ -866,7 +1135,9 @@ export const HaruFloatingAgent: React.FC<HaruFloatingAgentProps> = ({
               <ScrollView
                 style={[styles.chatList, chatListModeStyle]}
                 contentContainerStyle={styles.chatListContent}
-                keyboardShouldPersistTaps="handled">
+                keyboardShouldPersistTaps="handled"
+                nestedScrollEnabled
+                showsVerticalScrollIndicator>
                 {chatMessages.map(message => (
                   <View
                     key={message.id}
@@ -889,45 +1160,89 @@ export const HaruFloatingAgent: React.FC<HaruFloatingAgentProps> = ({
                   </View>
                 ) : null}
               </ScrollView>
+              <View style={styles.strategyRail}>
+                <ScrollView
+                  horizontal
+                  style={styles.strategyScroll}
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.strategyRow}>
+                  {AGENT_STRATEGY_OPTIONS.map(item => {
+                    const active = executionStrategy === item.value;
+                    return (
+                      <Pressable
+                        key={item.value}
+                        style={[styles.strategyChip, active && styles.strategyChipActive]}
+                        onPress={() => setExecutionStrategy(item.value)}>
+                        <Text style={[styles.strategyChipText, active && styles.strategyChipTextActive]}>
+                          {item.label}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              </View>
               <View style={styles.customGoalWrap}>
                 <TextInput
+                  testID="assistant-custom-goal-input"
                   value={customGoal}
                   onChangeText={setCustomGoal}
                   placeholder="输入你的需求，按发送开始执行"
                   placeholderTextColor="rgba(252,236,227,0.46)"
                   style={styles.customGoalInput}
+                  multiline
+                  numberOfLines={panelMode === 'half' ? 2 : 3}
+                  textAlignVertical="top"
                   editable={!loading && (!agentAvailabilityKnown || agentAvailable)}
                   onSubmitEditing={sendCustomGoal}
                 />
-                <Pressable
-                  style={[
-                    styles.customGoalBtn,
-                    ((agentAvailabilityKnown && !agentAvailable) || loading) &&
-                      styles.customGoalBtnDisabled,
-                  ]}
-                  disabled={loading || (agentAvailabilityKnown && !agentAvailable)}
-                  onPress={sendCustomGoal}>
-                  <Icon name="send" size={13} color="#FFEEDF" />
-                  <Text style={styles.customGoalBtnText}>发送</Text>
-                </Pressable>
-                <Pressable
-                  style={[
-                    styles.customGoalBtn,
-                    voiceRecording && styles.customGoalBtnVoiceActive,
-                    ((agentAvailabilityKnown && !agentAvailable) || loading) &&
-                      styles.customGoalBtnDisabled,
-                  ]}
-                  disabled={loading || (agentAvailabilityKnown && !agentAvailable)}
-                  onPressIn={onVoicePressIn}
-                  onPressOut={onVoicePressOut}>
-                  <Icon name={voiceRecording ? 'mic' : 'mic-outline'} size={13} color="#FFEEDF" />
-                  <Text style={styles.customGoalBtnText}>{voiceRecording ? '松开' : '语音'}</Text>
-                </Pressable>
+                <View style={styles.customGoalActionsRow}>
+                  <Pressable
+                    style={[
+                      styles.customGoalBtn,
+                      styles.customGoalBtnPrimary,
+                      ((agentAvailabilityKnown && !agentAvailable) || loading) &&
+                        styles.customGoalBtnDisabled,
+                    ]}
+                    disabled={loading || (agentAvailabilityKnown && !agentAvailable)}
+                    onPress={sendCustomGoal}>
+                    <Icon name="send" size={14} color="#FFEEDF" />
+                    <Text style={styles.customGoalBtnText}>发送</Text>
+                  </Pressable>
+                  <Pressable
+                    style={[
+                      styles.customGoalBtn,
+                      styles.customGoalBtnSecondary,
+                      voiceRecording && styles.customGoalBtnVoiceActive,
+                      ((agentAvailabilityKnown && !agentAvailable) || loading) &&
+                        styles.customGoalBtnDisabled,
+                    ]}
+                    disabled={loading || (agentAvailabilityKnown && !agentAvailable)}
+                    onPressIn={onVoicePressIn}
+                    onPressOut={onVoicePressOut}>
+                    <Icon name={voiceRecording ? 'mic' : 'mic-outline'} size={14} color="#FFEEDF" />
+                    <Text style={styles.customGoalBtnText}>{voiceRecording ? '松开结束' : '语音输入'}</Text>
+                  </Pressable>
+                </View>
               </View>
               <Text style={styles.voiceMetaText}>
                 语音阶段: {voicePhase}
                 {voiceLiveTranscript ? ` | ${voiceLiveTranscript}` : ''}
               </Text>
+              <Text style={styles.voiceMetaText}>
+                策略 {executionStrategy} | workflow {latestRunStatusText}
+              </Text>
+              {(pendingWorkflow || persistedRunRef) && !loading ? (
+                <View style={styles.pendingActions}>
+                  <Pressable style={styles.pendingBtn} onPress={resumeWorkflow}>
+                    <Icon name="refresh-circle" size={14} color="#FFEEDF" />
+                    <Text style={styles.pendingBtnText}>恢复续跑</Text>
+                  </Pressable>
+                  <Pressable style={[styles.pendingBtn, styles.pendingBtnGhost]} onPress={cancelWorkflow}>
+                    <Icon name="close-circle" size={14} color="#FFD8D8" />
+                    <Text style={[styles.pendingBtnText, styles.pendingBtnTextGhost]}>取消续跑</Text>
+                  </Pressable>
+                </View>
+              ) : null}
             </View>
           </View>
 
@@ -938,6 +1253,12 @@ export const HaruFloatingAgent: React.FC<HaruFloatingAgentProps> = ({
               {latestExecuteResult && !errorText ? (
                 <Text style={styles.statusText}>执行状态: {toResultStatusText(latestExecuteResult.status)}</Text>
               ) : null}
+              {latestExecuteResult?.workflowRun ? (
+                <Text style={styles.statusText}>
+                  运行态: {toWorkflowRunStatusText(latestExecuteResult.workflowRun.status)} · runId{' '}
+                  {latestExecuteResult.workflowRun.runId}
+                </Text>
+              ) : null}
               {combinedResultText ? <Text style={styles.statusText}>{combinedResultText}</Text> : null}
               {workflowProgressText ? <Text style={styles.statusText}>{workflowProgressText}</Text> : null}
               {latestExecuteResult?.workflowState?.nextRequiredContext ? (
@@ -945,6 +1266,24 @@ export const HaruFloatingAgent: React.FC<HaruFloatingAgentProps> = ({
                   下一步需要: {toRequiredContextText(latestExecuteResult.workflowState.nextRequiredContext)}
                 </Text>
               ) : null}
+              {latestExecuteResult?.resultSummary ? (
+                <Text style={styles.statusText}>
+                  {latestExecuteResult.resultSummary.done} {latestExecuteResult.resultSummary.next}
+                </Text>
+              ) : null}
+              {latestExecuteResult?.nextAction?.label ? (
+                <Text style={styles.statusText}>建议下一步: {latestExecuteResult.nextAction.label}</Text>
+              ) : null}
+              {latestExecuteResult?.resultCards?.slice(0, 2).map((card, index) => (
+                <Text key={`${card.kind}_${index}`} style={styles.statusText}>
+                  {card.title}: {card.summary}
+                </Text>
+              ))}
+              {runHistory.slice(-2).reverse().map(item => (
+                <Text key={item.id} style={styles.statusText}>
+                  历史 {item.type}: {item.message}
+                </Text>
+              ))}
               {missingContextGuides[0] ? (
                 <Pressable
                   style={styles.pendingBtn}
@@ -1069,7 +1408,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     borderWidth: 1,
     borderColor: 'rgba(226,232,240,0.92)',
-    backgroundColor: 'rgba(255,255,255,0.94)',
+    backgroundColor: '#FFFFFF',
     zIndex: 21,
   },
   bubbleAnchor: {
@@ -1086,7 +1425,7 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     borderWidth: 1,
     borderColor: 'rgba(226,232,240,0.92)',
-    backgroundColor: 'rgba(255,255,255,0.94)',
+    backgroundColor: '#FFFFFF',
     padding: 12,
     zIndex: 22,
     shadowColor: '#94A3B8',
@@ -1094,14 +1433,17 @@ const styles = StyleSheet.create({
     shadowRadius: 16,
     shadowOffset: {width: 0, height: 8},
   },
-  panelAnchor: {
-    right: 12,
+  panelSolidBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 24,
+    backgroundColor: '#FFFFFF',
   },
   panelHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     marginBottom: 10,
+    paddingBottom: 2,
   },
   panelTitle: {
     color: '#0F172A',
@@ -1120,7 +1462,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderWidth: 1,
     borderColor: 'rgba(226,232,240,0.92)',
-    backgroundColor: 'rgba(248,250,252,0.96)',
+    backgroundColor: '#F8FAFC',
   },
   panelBody: {
     gap: 10,
@@ -1137,15 +1479,19 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     borderWidth: 1,
     borderColor: 'rgba(226,232,240,0.92)',
-    backgroundColor: 'rgba(248,250,252,0.96)',
+    backgroundColor: '#F8FAFC',
     padding: 8,
     marginRight: 10,
   },
   panelAvatarAreaCompact: {
     width: 90,
     padding: 6,
-    marginRight: 8,
     minHeight: 150,
+  },
+  panelAvatarAreaStacked: {
+    width: '100%',
+    marginRight: 0,
+    marginBottom: 8,
   },
   avatarName: {
     color: '#0F172A',
@@ -1160,10 +1506,13 @@ const styles = StyleSheet.create({
   },
   panelContentArea: {
     flex: 1,
+    minHeight: 0,
     gap: 8,
+    backgroundColor: '#FFFFFF',
   },
   chatList: {
-    flex: 1,
+    flexGrow: 0,
+    flexShrink: 1,
   },
   chatListContent: {
     gap: 6,
@@ -1179,12 +1528,12 @@ const styles = StyleSheet.create({
   chatBubbleAssistant: {
     alignSelf: 'flex-start',
     borderColor: 'rgba(226,232,240,0.92)',
-    backgroundColor: 'rgba(248,250,252,0.98)',
+    backgroundColor: '#F8FAFC',
   },
   chatBubbleUser: {
     alignSelf: 'flex-end',
     borderColor: 'rgba(165,180,252,0.18)',
-    backgroundColor: 'rgba(79,70,229,0.92)',
+    backgroundColor: '#4F46E5',
   },
   chatBubbleText: {
     fontSize: 12,
@@ -1196,32 +1545,79 @@ const styles = StyleSheet.create({
   chatBubbleTextUser: {
     color: '#FFFFFF',
   },
+  strategyRail: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    paddingVertical: 2,
+  },
+  strategyScroll: {
+    backgroundColor: '#FFFFFF',
+  },
+  strategyRow: {
+    gap: 8,
+    paddingLeft: 2,
+    paddingRight: 8,
+  },
+  strategyChip: {
+    minHeight: 28,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(226,232,240,0.92)',
+    backgroundColor: '#F8FAFC',
+  },
+  strategyChipActive: {
+    backgroundColor: '#EEF2FF',
+    borderColor: 'rgba(99,102,241,0.28)',
+  },
+  strategyChipText: {
+    color: '#334155',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  strategyChipTextActive: {
+    color: '#4338CA',
+  },
   customGoalWrap: {
     marginTop: 2,
-    flexDirection: 'row',
-    alignItems: 'center',
+    flexDirection: 'column',
+    alignItems: 'stretch',
     gap: 8,
   },
   customGoalInput: {
-    flex: 1,
-    minHeight: 38,
-    borderRadius: 12,
+    width: '100%',
+    minHeight: 68,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: 'rgba(226,232,240,0.92)',
     color: '#0F172A',
-    fontSize: 12,
-    paddingHorizontal: 10,
-    backgroundColor: 'rgba(241,245,249,0.95)',
+    fontSize: 14,
+    lineHeight: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    backgroundColor: '#F1F5F9',
+  },
+  customGoalActionsRow: {
+    flexDirection: 'row',
+    gap: 8,
   },
   customGoalBtn: {
-    height: 38,
-    borderRadius: 11,
-    paddingHorizontal: 12,
+    minHeight: 40,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
     alignItems: 'center',
     justifyContent: 'center',
     flexDirection: 'row',
     gap: 5,
+    flex: 1,
+  },
+  customGoalBtnPrimary: {
     backgroundColor: '#4F46E5',
+  },
+  customGoalBtnSecondary: {
+    backgroundColor: '#5B4FE8',
   },
   customGoalBtnDisabled: {
     opacity: 0.55,
@@ -1244,7 +1640,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1,
     borderColor: 'rgba(226,232,240,0.92)',
-    backgroundColor: 'rgba(248,250,252,0.96)',
+    backgroundColor: '#F8FAFC',
     padding: 9,
     gap: 8,
   },

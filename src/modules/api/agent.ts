@@ -1,5 +1,12 @@
 import {requestApi} from './http';
-import type {AgentExecuteResponse, AgentPlanAction, AgentPlanResponse} from './types';
+import type {
+  AgentExecuteResponse,
+  AgentModuleHealthResponse,
+  AgentPlanAction,
+  AgentPlanResponse,
+  AgentResumeContextPatch,
+  AgentWorkflowHistoryResponse,
+} from './types';
 
 const BASE_CAPABILITIES: Array<{domain: string; operation: string}> = [
   {domain: 'navigation', operation: 'navigate_tab'},
@@ -9,8 +16,21 @@ const BASE_CAPABILITIES: Array<{domain: string; operation: string}> = [
   {domain: 'community', operation: 'create_draft'},
   {domain: 'community', operation: 'publish_draft'},
   {domain: 'settings', operation: 'apply_patch'},
+  {domain: 'settings', operation: 'open'},
+  {domain: 'permission', operation: 'request'},
+  {domain: 'auth', operation: 'require_login'},
+  {domain: 'file', operation: 'pick'},
+  {domain: 'file', operation: 'write'},
   {domain: 'app', operation: 'summarize_current_page'},
 ];
+
+const AGENT_TIMEOUT = {
+  plan: 60_000,
+  execute: 180_000,
+  runQuery: 60_000,
+  runMutate: 120_000,
+  health: 30_000,
+} as const;
 
 export type AgentPlanCurrentTab =
   | 'create'
@@ -48,15 +68,18 @@ export const agentApi = {
     prompt: string,
     currentTab: AgentPlanCurrentTab = 'agent',
     inputSource: 'text' | 'voice' = 'text',
+    executionStrategy?: 'fast' | 'quality' | 'cost',
   ): Promise<AgentPlanResponse> {
     return requestApi<AgentPlanResponse>('/v1/modules/agent/plan', {
       method: 'POST',
+      timeoutMs: AGENT_TIMEOUT.plan,
       body: {
         intent: {goal: prompt},
         currentTab: toLegacyCurrentTab(currentTab),
         inputSource,
         capabilities: BASE_CAPABILITIES,
         pageSnapshot: buildPageSnapshot(currentTab),
+        executionStrategy,
       },
     });
   },
@@ -68,18 +91,132 @@ export const agentApi = {
       actionIds?: string[];
       allowConfirmActions?: boolean;
       idempotencyKey?: string;
+      executionStrategy?: 'fast' | 'quality' | 'cost';
     },
   ): Promise<AgentExecuteResponse> {
     return requestApi<AgentExecuteResponse>('/v1/modules/agent/execute', {
       method: 'POST',
       auth: true,
+      timeoutMs: AGENT_TIMEOUT.execute,
       body: {
         planId,
         actions,
         actionIds: Array.isArray(options?.actionIds) ? options.actionIds : undefined,
         allowConfirmActions: options?.allowConfirmActions === true,
         idempotencyKey: typeof options?.idempotencyKey === 'string' ? options.idempotencyKey : undefined,
+        executionStrategy: options?.executionStrategy,
       },
+    });
+  },
+
+  async getWorkflowRun(runId: string): Promise<AgentExecuteResponse> {
+    return requestApi<AgentExecuteResponse>(`/v1/modules/agent/runs/${encodeURIComponent(runId)}`, {
+      auth: true,
+      timeoutMs: AGENT_TIMEOUT.runQuery,
+    });
+  },
+
+  async getWorkflowRunHistory(runId: string): Promise<AgentWorkflowHistoryResponse> {
+    return requestApi<AgentWorkflowHistoryResponse>(
+      `/v1/modules/agent/runs/${encodeURIComponent(runId)}/history`,
+      {
+        auth: true,
+        timeoutMs: AGENT_TIMEOUT.runQuery,
+      },
+    );
+  },
+
+  async registerWorkflowRun(input: {
+    planId: string;
+    actions: AgentPlanAction[];
+    latestExecuteResult: AgentExecuteResponse;
+    namespace?: string;
+    runId?: string;
+  }): Promise<AgentExecuteResponse> {
+    return requestApi<AgentExecuteResponse>('/v1/modules/agent/runs/register', {
+      method: 'POST',
+      auth: true,
+      timeoutMs: AGENT_TIMEOUT.runMutate,
+      body: {
+        planId: input.planId,
+        actions: input.actions,
+        latestExecuteResult: input.latestExecuteResult,
+        namespace: input.namespace,
+        runId: input.runId,
+      },
+    });
+  },
+
+  async resumeWorkflowRun(
+    runId: string,
+    options?: {
+      allowConfirmActions?: boolean;
+      contextPatch?: AgentResumeContextPatch;
+    },
+  ): Promise<AgentExecuteResponse> {
+    return requestApi<AgentExecuteResponse>(
+      `/v1/modules/agent/runs/${encodeURIComponent(runId)}/resume`,
+      {
+        method: 'POST',
+        auth: true,
+        timeoutMs: AGENT_TIMEOUT.runMutate,
+        body: {
+          allowConfirmActions: options?.allowConfirmActions === true,
+          contextPatch: options?.contextPatch,
+        },
+      },
+    );
+  },
+
+  async callbackWorkflowRun(
+    runId: string,
+  ): Promise<{ok: boolean; runId: string; changed: boolean; status: string}> {
+    return requestApi<{ok: boolean; runId: string; changed: boolean; status: string}>(
+      `/v1/modules/agent/runs/${encodeURIComponent(runId)}/callback`,
+      {
+        method: 'POST',
+        auth: true,
+        timeoutMs: AGENT_TIMEOUT.runMutate,
+      },
+    );
+  },
+
+  async cancelWorkflowRun(runId: string): Promise<AgentExecuteResponse> {
+    return requestApi<AgentExecuteResponse>(
+      `/v1/modules/agent/runs/${encodeURIComponent(runId)}/cancel`,
+      {
+        method: 'POST',
+        auth: true,
+        timeoutMs: AGENT_TIMEOUT.runMutate,
+      },
+    );
+  },
+
+  async retryWorkflowRun(
+    runId: string,
+    options?: {
+      actionIds?: string[];
+      allowConfirmActions?: boolean;
+    },
+  ): Promise<AgentExecuteResponse> {
+    return requestApi<AgentExecuteResponse>(
+      `/v1/modules/agent/runs/${encodeURIComponent(runId)}/retry`,
+      {
+        method: 'POST',
+        auth: true,
+        timeoutMs: AGENT_TIMEOUT.runMutate,
+        body: {
+          actionIds: Array.isArray(options?.actionIds) ? options.actionIds : undefined,
+          allowConfirmActions: options?.allowConfirmActions === true,
+        },
+      },
+    );
+  },
+
+  async getAgentHealth(): Promise<AgentModuleHealthResponse> {
+    return requestApi<AgentModuleHealthResponse>('/v1/modules/agent/health', {
+      auth: true,
+      timeoutMs: AGENT_TIMEOUT.health,
     });
   },
 };

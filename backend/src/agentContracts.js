@@ -39,6 +39,15 @@ const normalizeAgentAction = (value, index = 0, planId = 'agent_plan') => {
     id: typeof value.id === 'string' ? value.id : actionId,
     domain: value.domain,
     operation: value.operation,
+    toolRef:
+      isObject(value.toolRef) &&
+      typeof value.toolRef.serverId === 'string' &&
+      typeof value.toolRef.toolName === 'string'
+        ? {
+            serverId: value.toolRef.serverId,
+            toolName: value.toolRef.toolName,
+          }
+        : undefined,
     args: isObject(value.args) ? value.args : undefined,
     riskLevel: asRisk(value.riskLevel || value.risk_level),
     requiresConfirmation: Boolean(value.requiresConfirmation || value.requires_confirmation),
@@ -66,6 +75,7 @@ const normalizeAgentAction = (value, index = 0, planId = 'agent_plan') => {
     preconditions: Array.isArray(value.preconditions)
       ? value.preconditions.filter(item => typeof item === 'string' && item.trim())
       : [],
+    toolMeta: isObject(value.toolMeta) ? value.toolMeta : undefined,
     timeoutMs: Number.isFinite(Number(value.timeoutMs || value.timeout_ms))
       ? Number(value.timeoutMs || value.timeout_ms)
       : undefined,
@@ -149,6 +159,33 @@ const normalizeAgentPlanResponse = payload => {
         : [],
     plannerSource:
       payload.plannerSource === 'local' || payload.planner_source === 'local' ? 'local' : 'cloud',
+    summarySource:
+      payload.summarySource === 'rule' || payload.summary_source === 'rule' ? 'rule' : 'model',
+    clarificationRequired: payload.clarificationRequired === true,
+    clarificationQuestion:
+      typeof payload.clarificationQuestion === 'string' ? payload.clarificationQuestion : undefined,
+    strategySource:
+      payload.strategySource === 'user' || payload.strategy_source === 'user'
+        ? 'user'
+        : payload.strategySource === 'memory' || payload.strategy_source === 'memory'
+          ? 'memory'
+          : 'adaptive',
+    executionStrategy:
+      payload.executionStrategy === 'fast' ||
+      payload.executionStrategy === 'quality' ||
+      payload.executionStrategy === 'cost'
+        ? payload.executionStrategy
+        : undefined,
+    fallback:
+      payload.fallback && typeof payload.fallback === 'object'
+        ? {
+            used: Boolean(payload.fallback.used),
+            reason:
+              typeof payload.fallback.reason === 'string' ? payload.fallback.reason : 'fallback',
+          }
+        : undefined,
+    decisionPath:
+      payload.decisionPath === 'fallback_direct' ? 'fallback_direct' : 'planned',
   };
 };
 
@@ -174,6 +211,12 @@ const validateExecuteRequest = body => {
       ? body.idempotencyKey.trim()
       : '';
   const allowConfirmActions = body.allowConfirmActions === true;
+  const executionStrategy =
+    body.executionStrategy === 'fast' ||
+    body.executionStrategy === 'quality' ||
+    body.executionStrategy === 'cost'
+      ? body.executionStrategy
+      : undefined;
 
   return {
     ok: true,
@@ -185,6 +228,7 @@ const validateExecuteRequest = body => {
       actionIds,
       idempotencyKey,
       allowConfirmActions,
+      executionStrategy,
     },
   };
 };

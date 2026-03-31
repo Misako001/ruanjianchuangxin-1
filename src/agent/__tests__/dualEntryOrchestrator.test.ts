@@ -4,17 +4,52 @@ import {
   executeAgentPlanCycle,
 } from '../dualEntryOrchestrator';
 import type {AgentExecuteResponse, AgentPlanResponse} from '../../modules/api';
+import {useAgentExecutionContextStore} from '../executionContextStore';
+import {defaultColorGradingParams} from '../../types/colorGrading';
 
 jest.mock('../../modules/api', () => ({
   agentApi: {
     executePlan: jest.fn(),
+    registerWorkflowRun: jest.fn(),
+    resumeWorkflowRun: jest.fn(),
+    cancelWorkflowRun: jest.fn(),
+    createPlan: jest.fn(),
   },
+  colorApi: {
+    initialSuggest: jest.fn(),
+  },
+  communityApi: {
+    uploadPostImage: jest.fn(),
+    createDraft: jest.fn(),
+    publishDraft: jest.fn(),
+  },
+}));
+
+jest.mock('../../colorEngine/exportService', () => ({
+  exportGradedResult: jest.fn(),
 }));
 
 const {agentApi} = jest.requireMock('../../modules/api') as {
   agentApi: {
     executePlan: jest.Mock;
+    registerWorkflowRun: jest.Mock;
+    resumeWorkflowRun: jest.Mock;
+    cancelWorkflowRun: jest.Mock;
+    createPlan: jest.Mock;
   };
+};
+const {colorApi, communityApi} = jest.requireMock('../../modules/api') as {
+  colorApi: {
+    initialSuggest: jest.Mock;
+  };
+  communityApi: {
+    uploadPostImage: jest.Mock;
+    createDraft: jest.Mock;
+    publishDraft: jest.Mock;
+  };
+};
+const {exportGradedResult} = jest.requireMock('../../colorEngine/exportService') as {
+  exportGradedResult: jest.Mock;
 };
 
 const createAction = (overrides: Partial<AgentPlanResponse['actions'][number]> = {}) => ({
@@ -31,9 +66,22 @@ const createAction = (overrides: Partial<AgentPlanResponse['actions'][number]> =
 describe('dualEntryOrchestrator', () => {
   beforeEach(() => {
     agentApi.executePlan.mockReset();
+    agentApi.registerWorkflowRun.mockReset();
+    agentApi.resumeWorkflowRun.mockReset();
+    agentApi.cancelWorkflowRun.mockReset();
+    agentApi.createPlan.mockReset();
+    colorApi.initialSuggest.mockReset();
+    communityApi.uploadPostImage.mockReset();
+    communityApi.createDraft.mockReset();
+    communityApi.publishDraft.mockReset();
+    exportGradedResult.mockReset();
+    useAgentExecutionContextStore.setState({
+      colorContext: null,
+      modelingImageContext: null,
+    });
   });
 
-  it('auto-handles client-required navigation on client side', () => {
+  it('auto-handles client-required navigation on client side', async () => {
     const navigateToTab = jest.fn();
     const result: AgentExecuteResponse = {
       executionId: 'e1',
@@ -53,7 +101,7 @@ describe('dualEntryOrchestrator', () => {
       ],
     };
 
-    const normalized = applyClientRequiredActions(result, {
+    const normalized = await applyClientRequiredActions(result, {
       navigateToTab,
       summarizeCurrentPage: () => '',
     });
@@ -64,7 +112,7 @@ describe('dualEntryOrchestrator', () => {
     expect(normalized.clientHandledActions?.length).toBe(1);
   });
 
-  it('auto-handles summarize_current_page and returns summary text', () => {
+  it('auto-handles summarize_current_page and returns summary text', async () => {
     const result: AgentExecuteResponse = {
       executionId: 'e2',
       planId: 'p2',
@@ -82,7 +130,7 @@ describe('dualEntryOrchestrator', () => {
       ],
     };
 
-    const normalized = applyClientRequiredActions(result, {
+    const normalized = await applyClientRequiredActions(result, {
       navigateToTab: () => undefined,
       summarizeCurrentPage: () => '当前页面：调色页；已加载调色图片上下文',
     });
@@ -90,6 +138,112 @@ describe('dualEntryOrchestrator', () => {
     expect(normalized.status).toBe('applied');
     expect(normalized.pageSummary).toContain('当前页面');
     expect(normalized.actionResults[0].status).toBe('applied');
+  });
+
+  it('client-handles grading and community publish with current color context', async () => {
+    useAgentExecutionContextStore.setState({
+      colorContext: {
+        locale: 'zh-CN',
+        currentParams: defaultColorGradingParams,
+        image: {
+          mimeType: 'image/jpeg',
+          width: 1200,
+          height: 800,
+          base64: 'ZmFrZQ==',
+        },
+        imageStats: {} as never,
+        sourceUri: 'file:///tmp/source.jpg',
+        fileName: 'source.jpg',
+        nativeSourcePath: '/tmp/source.jpg',
+        workingSpaceHint: 'linear_srgb',
+        bitDepthHint: 8,
+      },
+      modelingImageContext: null,
+    });
+    colorApi.initialSuggest.mockResolvedValue({
+      actions: [{action: 'adjust_param', target: 'contrast', delta: 12}],
+      confidence: 0.91,
+      needsConfirmation: false,
+      fallbackUsed: false,
+      reasoningSummary: 'ok',
+      message: 'ok',
+      source: 'cloud',
+      analysisSummary: '适合轻电影感增强',
+      appliedProfile: '电影感',
+      sceneProfile: '人像',
+    });
+    exportGradedResult.mockResolvedValue({
+      uri: 'file:///tmp/graded.png',
+    });
+    communityApi.uploadPostImage
+      .mockResolvedValueOnce({url: 'https://cdn/before.jpg'})
+      .mockResolvedValueOnce({url: 'https://cdn/after.png'});
+    communityApi.createDraft.mockResolvedValue({
+      id: 'draft-1',
+      beforeUrl: 'https://cdn/before.jpg',
+      afterUrl: 'https://cdn/after.png',
+    });
+    communityApi.publishDraft.mockResolvedValue({
+      id: 'post-1',
+    });
+
+    const result: AgentExecuteResponse = {
+      executionId: 'e3',
+      planId: 'p3',
+      status: 'client_required',
+      actionResults: [
+        {
+          status: 'client_required',
+          message: 'client_action_required:grading.apply_visual_suggest',
+          errorCode: 'client_required',
+          action: createAction({
+            actionId: 'grade-1',
+            domain: 'grading',
+            operation: 'apply_visual_suggest',
+          }),
+        },
+        {
+          status: 'client_required',
+          message: 'client_action_required:community.create_draft',
+          errorCode: 'client_required',
+          action: createAction({
+            actionId: 'draft-1',
+            domain: 'community',
+            operation: 'create_draft',
+            args: {
+              title: '发布到社区',
+              tags: ['AI助手'],
+            },
+          }),
+        },
+        {
+          status: 'client_required',
+          message: 'client_action_required:community.publish_draft',
+          errorCode: 'client_required',
+          action: createAction({
+            actionId: 'publish-1',
+            domain: 'community',
+            operation: 'publish_draft',
+          }),
+        },
+      ],
+    };
+
+    const normalized = await applyClientRequiredActions(result, {
+      navigateToTab: () => undefined,
+      summarizeCurrentPage: () => '',
+    });
+
+    expect(colorApi.initialSuggest).toHaveBeenCalledTimes(1);
+    expect(communityApi.createDraft).toHaveBeenCalledWith(
+      expect.objectContaining({
+        beforeUrl: 'https://cdn/before.jpg',
+        afterUrl: 'https://cdn/after.png',
+      }),
+    );
+    expect(communityApi.publishDraft).toHaveBeenCalledWith('draft-1');
+    expect(normalized.status).toBe('applied');
+    expect(normalized.clientHandledActions).toHaveLength(3);
   });
 
   it('blocks execution when required image context is missing', async () => {
@@ -120,7 +274,8 @@ describe('dualEntryOrchestrator', () => {
       },
     });
 
-    expect(cycle.executeResult).toBeNull();
+    expect(cycle.executeResult?.status).toBe('client_required');
+    expect(cycle.executeResult?.workflowRun?.status).toBe('waiting_context');
     expect(cycle.missingContextGuides).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

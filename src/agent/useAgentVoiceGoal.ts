@@ -1,9 +1,11 @@
 import {useCallback, useEffect, useRef, useState} from 'react';
 import {colorApi, formatApiErrorMessage} from '../modules/api';
+import {ApiRequestError} from '../modules/api/http';
 import {createSpeechRecognizer, requestRecordAudioPermission} from '../voice/speechRecognizer';
 import type {VoiceAudioReadyPayload} from '../voice/types';
 
 type AgentVoicePhase = 'idle' | 'listening' | 'transcribing' | 'error';
+const VOICE_PARSE_WATCHDOG_MS = 2500;
 
 interface UseAgentVoiceGoalOptions {
   locale?: string;
@@ -44,6 +46,33 @@ const normalizeSpeechErrorMessage = (rawMessage: string): string => {
   return message;
 };
 
+const mapAsrErrorCodeToMessage = (code: string): string | null => {
+  switch (code) {
+    case 'ASR_TIMEOUT':
+      return '语音转写超时，请检查网络后重试。';
+    case 'ASR_MODEL_UNAVAILABLE':
+      return '语音转写模型不可用，请稍后重试。';
+    case 'ASR_BAD_AUDIO':
+      return '音频无效或过短，请按住说话 1 秒以上后重试。';
+    case 'ASR_NETWORK_ERROR':
+      return '语音转写网络异常，请检查后端与网络连接。';
+    case 'ASR_MISCONFIG':
+      return '语音转写服务未配置，请联系开发者检查 ASR 配置。';
+    default:
+      return null;
+  }
+};
+
+const formatVoiceTranscribeError = (error: unknown): string => {
+  if (error instanceof ApiRequestError) {
+    const mapped = mapAsrErrorCodeToMessage(String(error.code || '').toUpperCase());
+    if (mapped) {
+      return mapped;
+    }
+  }
+  return normalizeSpeechErrorMessage(formatApiErrorMessage(error, '语音转写失败'));
+};
+
 export const useAgentVoiceGoal = ({
   locale = 'zh-CN',
   busy = false,
@@ -57,6 +86,38 @@ export const useAgentVoiceGoal = ({
   const pressingRef = useRef(false);
   const submittedTranscriptRef = useRef('');
   const submittedAudioUriRef = useRef('');
+  const pendingParseRef = useRef(false);
+  const parseWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearPendingParse = useCallback(() => {
+    pendingParseRef.current = false;
+    if (parseWatchdogRef.current) {
+      clearTimeout(parseWatchdogRef.current);
+      parseWatchdogRef.current = null;
+    }
+  }, []);
+
+  const setVoiceErrorState = useCallback(
+    (message: string) => {
+      clearPendingParse();
+      setRecording(false);
+      setPhase('error');
+      setErrorText(message);
+    },
+    [clearPendingParse],
+  );
+
+  const armParseWatchdog = useCallback(() => {
+    if (parseWatchdogRef.current) {
+      clearTimeout(parseWatchdogRef.current);
+    }
+    parseWatchdogRef.current = setTimeout(() => {
+      if (submittedTranscriptRef.current.trim()) {
+        return;
+      }
+      setVoiceErrorState('语音采集未获得可转写内容，请重试。');
+    }, VOICE_PARSE_WATCHDOG_MS);
+  }, [setVoiceErrorState]);
 
   const submitTranscript = useCallback(
     (rawText: string): boolean => {
@@ -64,6 +125,7 @@ export const useAgentVoiceGoal = ({
       if (!normalized) {
         return false;
       }
+      clearPendingParse();
       if (submittedTranscriptRef.current === normalized) {
         return true;
       }
@@ -74,7 +136,7 @@ export const useAgentVoiceGoal = ({
       onTranscript(normalized);
       return true;
     },
-    [onTranscript],
+    [clearPendingParse, onTranscript],
   );
 
   const submitVoiceAudio = useCallback(
@@ -100,18 +162,20 @@ export const useAgentVoiceGoal = ({
         });
         const transcript = String(result.transcript || '').trim();
         if (!transcript) {
-          setPhase('error');
-          setErrorText('语音转写未返回有效文本，请重试。');
+          setVoiceErrorState('语音转写未返回有效文本，请重试。');
           return false;
         }
         return submitTranscript(transcript);
       } catch (error) {
-        setPhase('error');
-        setErrorText(normalizeSpeechErrorMessage(formatApiErrorMessage(error, '语音转写失败')));
+        setVoiceErrorState(formatVoiceTranscribeError(error));
         return false;
+      } finally {
+        clearPendingParse();
+        submittedAudioUriRef.current = '';
+        recognizerRef.current.cleanupAudio?.(audioUri).catch(() => undefined);
       }
     },
-    [locale, submitTranscript],
+    [clearPendingParse, locale, setVoiceErrorState, submitTranscript],
   );
 
   const recognizerRef = useRef(
@@ -130,20 +194,23 @@ export const useAgentVoiceGoal = ({
         submitVoiceAudio(audio).catch(() => undefined);
       },
       onError: message => {
-        setPhase('error');
-        setErrorText(normalizeSpeechErrorMessage(message || '语音识别失败'));
+        if (submittedTranscriptRef.current.trim() || submittedAudioUriRef.current.trim()) {
+          return;
+        }
+        setVoiceErrorState(normalizeSpeechErrorMessage(message || '语音识别失败'));
       },
       onPreempted: () => {
-        setPhase('error');
-        setRecording(false);
-        setErrorText('语音识别已被其他任务抢占，请重试。');
+        setVoiceErrorState('语音识别已被其他任务抢占，请重试。');
       },
       onEnd: () => {
         setRecording(false);
-        if (!submittedTranscriptRef.current.trim()) {
-          setPhase('transcribing');
-        } else {
+        if (submittedTranscriptRef.current.trim()) {
+          clearPendingParse();
           setPhase('idle');
+          return;
+        }
+        if (pendingParseRef.current) {
+          armParseWatchdog();
         }
       },
     }),
@@ -151,9 +218,10 @@ export const useAgentVoiceGoal = ({
 
   useEffect(() => {
     return () => {
+      clearPendingParse();
       recognizerRef.current.destroy().catch(() => undefined);
     };
-  }, []);
+  }, [clearPendingParse]);
 
   const startRecord = useCallback(async () => {
     if (busy) {
@@ -175,17 +243,18 @@ export const useAgentVoiceGoal = ({
     setErrorText('');
     submittedTranscriptRef.current = '';
     submittedAudioUriRef.current = '';
+    clearPendingParse();
     setLiveTranscript('');
     setPhase('listening');
     setRecording(true);
     try {
       await recognizerRef.current.start(locale);
     } catch (error) {
-      setPhase('error');
-      setRecording(false);
-      setErrorText(normalizeSpeechErrorMessage(formatApiErrorMessage(error, '语音启动失败')));
+      setVoiceErrorState(
+        normalizeSpeechErrorMessage(formatApiErrorMessage(error, '语音启动失败')),
+      );
     }
-  }, [busy, locale, recording]);
+  }, [busy, clearPendingParse, locale, recording, setVoiceErrorState]);
 
   const stopRecord = useCallback(async () => {
     if (!recording && phase !== 'listening') {
@@ -193,14 +262,21 @@ export const useAgentVoiceGoal = ({
     }
     try {
       setPhase('transcribing');
+      if (!submittedTranscriptRef.current.trim()) {
+        pendingParseRef.current = true;
+        armParseWatchdog();
+      } else {
+        clearPendingParse();
+      }
       await recognizerRef.current.stop();
     } catch (error) {
-      setPhase('error');
-      setErrorText(normalizeSpeechErrorMessage(formatApiErrorMessage(error, '语音停止失败')));
+      setVoiceErrorState(
+        normalizeSpeechErrorMessage(formatApiErrorMessage(error, '语音停止失败')),
+      );
     } finally {
       setRecording(false);
     }
-  }, [phase, recording]);
+  }, [armParseWatchdog, clearPendingParse, phase, recording, setVoiceErrorState]);
 
   const onPressIn = useCallback(() => {
     pressingRef.current = true;
